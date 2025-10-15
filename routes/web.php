@@ -5,7 +5,7 @@ use Laravel\Fortify\Features;
 use Livewire\Volt\Volt;
 
 Route::get('/', function () {
-    return view('welcome');
+    return redirect()->route('login');
 })->name('home');
 
 Route::view('dashboard', 'dashboard')
@@ -19,16 +19,16 @@ Route::middleware(['auth'])->group(function () {
     Volt::route('settings/password', 'settings.password')->name('password.edit');
     Volt::route('settings/appearance', 'settings.appearance')->name('appearance.edit');
 
-    Volt::route('settings/two-factor', 'settings.two-factor')
-        ->middleware(
-            when(
-                Features::canManageTwoFactorAuthentication()
-                    && Features::optionEnabled(Features::twoFactorAuthentication(), 'confirmPassword'),
-                ['password.confirm'],
-                [],
-            ),
-        )
-        ->name('two-factor.show');
+    // Volt::route('settings/two-factor', 'settings.two-factor')
+    //     ->middleware(
+    //         when(
+    //             Features::canManageTwoFactorAuthentication()
+    //                 && Features::optionEnabled(Features::twoFactorAuthentication(), 'confirmPassword'),
+    //             ['password.confirm'],
+    //             [],
+    //         ),
+    //     )
+    //     ->name('two-factor.show');
 });
 
 require __DIR__.'/auth.php';
