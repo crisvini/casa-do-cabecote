@@ -8,16 +8,16 @@ Route::get('/', function () {
     return redirect()->route('login');
 })->name('home');
 
-Route::view('dashboard', 'dashboard')
+Route::view('servicos', 'services')
     ->middleware(['auth', 'verified'])
-    ->name('dashboard');
+    ->name('services');
 
 Route::middleware(['auth'])->group(function () {
-    Route::redirect('settings', 'settings/profile');
+    Route::redirect('configuracoes', 'configuracoes/perfil');
 
-    Volt::route('settings/profile', 'settings.profile')->name('profile.edit');
-    Volt::route('settings/password', 'settings.password')->name('password.edit');
-    Volt::route('settings/appearance', 'settings.appearance')->name('appearance.edit');
+    Volt::route('configuracoes/perfil', 'settings.profile')->name('profile.edit');
+    Volt::route('configuracoes/senha', 'settings.password')->name('password.edit');
+    Volt::route('configuracoes/aparencia', 'settings.appearance')->name('appearance.edit');
 
     // Volt::route('settings/two-factor', 'settings.two-factor')
     //     ->middleware(
@@ -31,4 +31,4 @@ Route::middleware(['auth'])->group(function () {
     //     ->name('two-factor.show');
 });
 
-require __DIR__.'/auth.php';
+require __DIR__ . '/auth.php';

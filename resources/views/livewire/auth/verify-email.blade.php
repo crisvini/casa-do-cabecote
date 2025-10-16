@@ -34,7 +34,7 @@ new #[Layout('components.layouts.auth')] class extends Component {
     public function rendering(View $view): void
     {
         if (Auth::user()->hasVerifiedEmail()) {
-            $this->redirectIntended(default: route('dashboard', absolute: false), navigate: true);
+            $this->redirectIntended(default: route('services', absolute: false), navigate: true);
 
             return;
         }
