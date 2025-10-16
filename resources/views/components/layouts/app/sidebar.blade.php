@@ -14,6 +14,7 @@
             <flux:navlist variant="outline">
                 <flux:navlist.group :heading="__('Menu')" class="grid">
                     <flux:navlist.item icon="wrench" :href="route('services')" :current="request()->routeIs('services')" wire:navigate>{{ __('Serviços') }}</flux:navlist.item>
+                    <flux:navlist.item icon="users" :href="route('users.index')" :current="request()->routeIs('users.index')" wire:navigate>{{ __('Usuários') }}</flux:navlist.item>
                 </flux:navlist.group>
             </flux:navlist>
 

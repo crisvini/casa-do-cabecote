@@ -19,6 +19,10 @@ Route::middleware(['auth'])->group(function () {
     Volt::route('configuracoes/senha', 'settings.password')->name('password.edit');
     Volt::route('configuracoes/aparencia', 'settings.appearance')->name('appearance.edit');
 
+    Volt::route('usuarios', 'users.index')->name('users.index');
+    Volt::route('usuarios/criar', 'users.create')->name('users.create');
+    Volt::route('usuarios/editar/{user}', 'users.edit')->name('users.edit');
+
     // Volt::route('settings/two-factor', 'settings.two-factor')
     //     ->middleware(
     //         when(
