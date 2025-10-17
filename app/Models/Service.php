@@ -23,7 +23,7 @@ class Service extends Model
     ];
 
     protected $casts = [
-        'paid'         => 'bool',
+        'paid'         => 'boolean',
         'completed_at' => 'date',
     ];
 
