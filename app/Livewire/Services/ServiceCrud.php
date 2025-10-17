@@ -11,7 +11,7 @@ use Livewire\Attributes\On;
 use Livewire\Component;
 use Livewire\WithPagination;
 
-#[Layout('layouts.app')] // ou seu layout padrão
+#[Layout('components.layouts.app')]
 class ServiceCrud extends Component
 {
     use WithPagination;
@@ -68,7 +68,7 @@ class ServiceCrud extends Component
 
     public function openCreate(): void
     {
-        Gate::authorize('permission', 'services.manage');
+        abort_unless(auth()->user()->can('services.manage'), 403);
 
         $this->resetForm();
         $this->showForm = true;
@@ -76,7 +76,7 @@ class ServiceCrud extends Component
 
     public function openEdit(int $id): void
     {
-        Gate::authorize('permission', 'services.manage');
+        abort_unless(auth()->user()->can('services.manage'), 403);
 
         $service = Service::findOrFail($id);
         $this->fill([
@@ -94,7 +94,7 @@ class ServiceCrud extends Component
 
     public function save(): void
     {
-        Gate::authorize('permission', 'services.manage');
+        abort_unless(auth()->user()->can('services.manage'), 403);
 
         $data = $this->validate();
 
@@ -110,7 +110,7 @@ class ServiceCrud extends Component
 
     public function confirmDelete(int $id): void
     {
-        Gate::authorize('permission', 'services.manage');
+        abort_unless(auth()->user()->can('services.manage'), 403);
 
         $this->editingId = $id;
         $this->confirmingDelete = true;
@@ -118,7 +118,7 @@ class ServiceCrud extends Component
 
     public function delete(): void
     {
-        Gate::authorize('permission', 'services.manage');
+        abort_unless(auth()->user()->can('services.manage'), 403);
 
         Service::whereKey($this->editingId)->delete();
         $this->confirmingDelete = false;
@@ -127,7 +127,7 @@ class ServiceCrud extends Component
 
     public function startService(int $id): void
     {
-        Gate::authorize('permission', 'services.start');
+        abort_unless(auth()->user()->can('services.start'), 403);
 
         $service = Service::findOrFail($id);
 
@@ -141,7 +141,7 @@ class ServiceCrud extends Component
 
     public function finishService(int $id): void
     {
-        Gate::authorize('permission', 'services.finish');
+        abort_unless(auth()->user()->can('services.finish'), 403);
 
         $service = Service::findOrFail($id);
 
@@ -162,7 +162,7 @@ class ServiceCrud extends Component
 
     public function changeStatus(int $id, int $statusId): void
     {
-        Gate::authorize('permission', 'services.change-status');
+        abort_unless(auth()->user()->can('services.change-status'), 403);
 
         Service::whereKey($id)->update(['current_status_id' => $statusId]);
         $this->dispatch('notify', body: 'Status alterado.');
