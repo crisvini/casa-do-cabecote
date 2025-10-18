@@ -40,6 +40,11 @@ class ServiceCrud extends Component
     public string $confirmMessage = '';
     public bool $editingLocked = false;
     public bool $isViewing = false;
+    public bool $hasProgress = false;
+    public bool $isRunningAtOpen = false;
+    public bool $isTerminalAtOpen = false;
+    public bool $isFlowLockedAtOpen = false;
+    public array $locked_prefix_ids = [];
 
     public function rules(): array
     {
@@ -112,6 +117,11 @@ class ServiceCrud extends Component
         $this->flow_status_ids = array_map('intval', $first);
         $this->flow_order_ids  = array_map('intval', $first);
 
+        $this->hasProgress = false;
+        $this->isRunningAtOpen = false;
+        $this->isTerminalAtOpen = false;
+        $this->isFlowLockedAtOpen = false;
+        $this->locked_prefix_ids = [];
         $this->paid = false;
         $this->editingLocked = false;
         $this->isViewing = false;
@@ -121,7 +131,12 @@ class ServiceCrud extends Component
     public function openEdit(int $id): void
     {
         abort_unless(auth()->user()->can('services.manage'), 403);
-        $service = Service::with('flow')->findOrFail($id);
+
+        // 🔁 limpa erros antigos do Livewire/validator
+        $this->resetValidation();
+        $this->resetErrorBag();
+
+        $service = Service::with('flow', 'currentStatus', 'logs')->findOrFail($id);
 
         $this->fill([
             'editingId'         => $service->id,
@@ -134,13 +149,30 @@ class ServiceCrud extends Component
             'service_order'     => $service->service_order,
         ]);
 
-        $flow = $service->flow()->pluck('status_id')->all();
+        $flow = $service->flow()->orderBy('step_order')->pluck('status_id')->values()->all();
         $this->flow_status_ids = array_map('intval', $flow);
         $this->flow_order_ids  = array_map('intval', $flow);
 
-        $this->editingLocked = (bool) $service->flow_locked || (bool) optional($service->currentStatus)->is_terminal;
+        // flags para o banner e regras
+        $this->isTerminalAtOpen   = (bool) optional($service->currentStatus)->is_terminal;
+        $this->isFlowLockedAtOpen = (bool) $service->flow_locked;
+        $this->isRunningAtOpen    = $service->hasOpenLogForCurrent();
+        $this->hasProgress        = $service->hasAnyProgress();
+
+        // 🔒 o formulário TODO só fica travado se finalizado/flow_locked/rodando
+        $this->editingLocked = $this->isTerminalAtOpen || $this->isFlowLockedAtOpen || $this->isRunningAtOpen;
+
+        // prefixo imutável (se já houve progresso)
+        $this->locked_prefix_ids = [];
+        if ($this->hasProgress) {
+            $idx = array_search((int)$service->current_status_id, $flow, true);
+            if ($idx !== false) {
+                $this->locked_prefix_ids = array_map('intval', array_slice($flow, 0, $idx + 1));
+            }
+        }
+
         $this->isViewing = false;
-        $this->showForm = true;
+        $this->showForm  = true;
     }
 
     public function openView(int $id): void
@@ -165,6 +197,7 @@ class ServiceCrud extends Component
 
         $this->editingLocked = true; // não importa; tudo ficará desabilitado
         $this->isViewing     = true;
+        $this->hasProgress = false;
         $this->showForm      = true;
     }
 
@@ -176,6 +209,7 @@ class ServiceCrud extends Component
 
     protected function normalizeFlow(): void
     {
+        // mantém apenas status permitidos
         $allowed = Status::where('is_terminal', false)
             ->where('is_selectable', true)
             ->pluck('id')->map(fn($v) => (int)$v)->all();
@@ -185,13 +219,31 @@ class ServiceCrud extends Component
             $allowed
         ));
 
+        // ordem atual “sanitizada”
         $currentOrder = array_map('intval', $this->flow_order_ids);
         $this->flow_order_ids = array_values(array_intersect($currentOrder, $this->flow_status_ids));
 
+        // inclui faltantes ao final
         foreach ($this->flow_status_ids as $id) {
             if (!in_array($id, $this->flow_order_ids, true)) {
                 $this->flow_order_ids[] = $id;
             }
+        }
+
+        // ⚙️ Reforço: se já houve progresso, prefixo é imutável
+        if ($this->editingId && $this->hasProgress && !empty($this->locked_prefix_ids)) {
+            // 1) garante que o prefixo SEMPRE esteja selecionado
+            $this->flow_status_ids = array_values(array_unique(array_merge(
+                $this->locked_prefix_ids,
+                $this->flow_status_ids
+            )));
+
+            // 2) garante prefixo no início e na mesma ordem no flow_order_ids
+            $ordered = array_values(array_intersect($this->flow_order_ids, $this->flow_status_ids));
+
+            // remove prefixo do meio e re-prepende
+            $orderedWithoutPrefix = array_values(array_diff($ordered, $this->locked_prefix_ids));
+            $this->flow_order_ids = array_values(array_merge($this->locked_prefix_ids, $orderedWithoutPrefix));
         }
     }
 
@@ -203,11 +255,18 @@ class ServiceCrud extends Component
     public function moveUp(int $statusId): void
     {
         $this->normalizeFlow();
-
         $statusId = (int) $statusId;
-        $idx = array_search($statusId, $this->flow_order_ids, true);
 
+        if ($this->hasProgress && in_array($statusId, $this->locked_prefix_ids, true)) {
+            return; // 🔒 não move prefixo
+        }
+
+        $idx = array_search($statusId, $this->flow_order_ids, true);
         if ($idx !== false && $idx > 0) {
+            // impede que item ultrapasse o fim do prefixo
+            $minIdx = $this->hasProgress ? count($this->locked_prefix_ids) : 0;
+            if ($this->hasProgress && $idx - 1 < $minIdx) return;
+
             [$this->flow_order_ids[$idx - 1], $this->flow_order_ids[$idx]] =
                 [$this->flow_order_ids[$idx], $this->flow_order_ids[$idx - 1]];
             $this->flow_order_ids = array_values($this->flow_order_ids);
@@ -217,10 +276,13 @@ class ServiceCrud extends Component
     public function moveDown(int $statusId): void
     {
         $this->normalizeFlow();
-
         $statusId = (int) $statusId;
-        $idx = array_search($statusId, $this->flow_order_ids, true);
 
+        if ($this->hasProgress && in_array($statusId, $this->locked_prefix_ids, true)) {
+            return; // 🔒 não move prefixo
+        }
+
+        $idx = array_search($statusId, $this->flow_order_ids, true);
         if ($idx !== false && $idx < count($this->flow_order_ids) - 1) {
             [$this->flow_order_ids[$idx + 1], $this->flow_order_ids[$idx]] =
                 [$this->flow_order_ids[$idx], $this->flow_order_ids[$idx + 1]];
@@ -241,31 +303,94 @@ class ServiceCrud extends Component
         $data = $this->validate();
 
         DB::transaction(function () use ($data) {
+            // --- (A) Normalização/segurança do $order ---
             $order = !empty($this->flow_order_ids) ? $this->flow_order_ids : $this->flow_status_ids;
+
+            // força inteiros e únicos, preservando a primeira ocorrência
+            $order = array_values(array_unique(array_map('intval', $order)));
+
+            // mantém só status permitidos (não-terminais e selecionáveis)
+            $allowed = Status::query()
+                ->where('is_terminal', false)
+                ->where('is_selectable', true)
+                ->pluck('id')->map(fn($v) => (int)$v)->all();
+
+            $order = array_values(array_intersect($order, $allowed));
+
+            if (empty($order)) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'flow_status_ids' => 'Selecione ao menos uma etapa válida para o fluxo.',
+                ]);
+            }
 
             /** @var \App\Models\Service $service */
             $service = $this->editingId
-                ? Service::findOrFail($this->editingId)
+                ? Service::with('flow', 'logs', 'currentStatus')->findOrFail($this->editingId)
                 : new Service();
 
-            // travado => só campos liberados
-            if ($service->exists && ($service->flow_locked || $service->isTerminal())) {
-                $service->update([
-                    'paid'        => (bool) $data['paid'],
-                    'description' => $data['description'] ?? null,
-                ]);
-                return;
+            // --- (B) Bloqueios duros já existentes ---
+            if ($service->exists) {
+                if ($service->flow_locked || $service->isTerminal()) {
+                    $service->update([
+                        'paid'        => (bool) $data['paid'],
+                        'description' => $data['description'] ?? null,
+                    ]);
+                    return;
+                }
+
+                if ($service->hasOpenLogForCurrent()) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'flow_status_ids' => 'Serviço em execução: encerre a etapa atual para alterar o fluxo.',
+                    ]);
+                }
             }
 
-            // fluxo normal
+            // --- (C) Regras quando já houve progresso ---
+            if ($service->exists && $service->hasAnyProgress()) {
+                // 1) A etapa atual DEVE existir no novo fluxo
+                if (!in_array((int)$service->current_status_id, $order, true)) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'flow_status_ids' => 'O fluxo precisa conter a etapa atual do serviço.',
+                    ]);
+                }
+
+                // 2) Prefixo até a etapa atual é imutável
+                $currentFlow  = $service->flow()->orderBy('step_order')->pluck('status_id')->values()->all();
+                $currentIndex = $service->currentIndexInFlow(); // 0-based ou -1
+
+                if ($currentIndex < 0) {
+                    // current não está no fluxo salvo -> trate como erro claro
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'flow_status_ids' => 'Fluxo inconsistente: a etapa atual não consta no fluxo salvo. Reinclua a etapa atual antes de salvar.',
+                    ]);
+                }
+
+                $oldPrefix = array_map('intval', array_slice($currentFlow, 0, $currentIndex + 1));
+                $newPrefix = array_map('intval', array_slice($order,      0, $currentIndex + 1));
+
+                if ($oldPrefix !== $newPrefix) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'flow_status_ids' => 'Não é permitido alterar etapas já percorridas (antes ou incluindo a etapa atual).',
+                    ]);
+                }
+            }
+
+            // --- (D) Persistência normal (como você já fazia) ---
             $service->fill($data);
 
-            // 🔒 força current_status_id = primeiro do fluxo (garantidamente permitido)
-            $service->current_status_id = (int) $order[0];
-            $service->completed_at = null;
-            $service->save();
+            if (!$service->exists) {
+                $service->current_status_id = (int) $order[0];
+                $service->completed_at = null;
+                $service->save();
+            } else {
+                if (!$service->hasAnyProgress()) {
+                    $service->update([
+                        'current_status_id' => (int) $order[0],
+                        'completed_at'      => null,
+                    ]);
+                }
+            }
 
-            // regrava o fluxo
             $service->flow()->delete();
             foreach (array_values($order) as $i => $statusId) {
                 $service->flow()->create([
@@ -348,16 +473,18 @@ class ServiceCrud extends Component
         $service = Service::with('flow')->findOrFail($id);
         $target  = Status::findOrFail($statusId);
 
-        // ⛔ nunca permitir aqui status terminal ou não-selecionável
+        // ⛔ se estiver em execução, não troca status "no clique"
+        if ($service->hasOpenLogForCurrent()) {
+            $this->dispatch('notify', body: 'Serviço em execução: encerre a etapa atual para avançar.', type: 'warning');
+            return;
+        }
+
         if ($target->is_terminal || !$target->is_selectable) {
             $this->dispatch('notify', body: 'Status inválido para seleção direta.', type: 'warning');
             return;
         }
 
         $flowIds = $service->flow->pluck('status_id')->all();
-        $isAdmin = auth()->user()->hasRole('admin');
-
-        // mesmo admin precisa respeitar o fluxo (senão vira “teleporte” de etapa)
         if (!in_array($statusId, $flowIds, true)) {
             $this->dispatch('notify', body: 'Este serviço não possui essa etapa na trilha.', type: 'warning');
             return;
@@ -365,7 +492,6 @@ class ServiceCrud extends Component
 
         $service->update(['current_status_id' => $statusId]);
 
-        // completude baseada no último do fluxo
         if (!empty($flowIds) && $statusId === end($flowIds)) {
             $service->updateQuietly(['completed_at' => now()]);
         } else {

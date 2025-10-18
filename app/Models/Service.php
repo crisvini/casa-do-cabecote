@@ -131,6 +131,49 @@ class Service extends Model
         $this->updateQuietly(['flow_locked' => true]);
     }
 
+    public function hasOpenLogForCurrent(): bool
+    {
+        return $this->logs()
+            ->where('status_id', $this->current_status_id)
+            ->whereNull('finished_at')
+            ->exists();
+    }
+
+    public function hasAnyProgress(): bool
+    {
+        // já iniciou alguma etapa em algum momento (existe log)
+        return $this->logs()->exists();
+    }
+
+    public function getIsRunningAttribute(): bool
+    {
+        if ($this->relationLoaded('logs')) {
+            return $this->logs
+                ->where('status_id', $this->current_status_id)
+                ->whereNull('finished_at')
+                ->isNotEmpty();
+        }
+        return $this->hasOpenLogForCurrent();
+    }
+
+    public function getHasProgressAttribute(): bool
+    {
+        if ($this->relationLoaded('logs')) {
+            return $this->logs->isNotEmpty();
+        }
+        return $this->hasAnyProgress();
+    }
+
+    /**
+     * Retorna o índice (0-based) do current_status dentro do fluxo (ou -1 se não estiver).
+     */
+    public function currentIndexInFlow(): int
+    {
+        $flowIds = $this->flow()->orderBy('step_order')->pluck('status_id')->values()->all();
+        $idx = array_search((int) $this->current_status_id, array_map('intval', $flowIds), true);
+        return $idx === false ? -1 : $idx;
+    }
+
     /**
      * Finaliza tudo e envia para um status terminal.
      */

@@ -69,7 +69,8 @@
 
                             @can('services.change-status')
                                 <flux:dropdown>
-                                    <flux:button size="sm" :disabled="$row->completed_at ? true : false"
+                                    <flux:button size="sm"
+                                        :disabled="($row->completed_at ? true : false) || $row->is_running"
                                         class="!px-2 w-full !py-1 rounded-md shadow-sm border border-black/10 dark:border-white/10"
                                         style="background-color: {{ $st?->color ?? '#E5E7EB' }}; color: {{ contrast_color($st?->color ?? '#E5E7EB') }};"
                                         icon:trailing="chevron-down">
@@ -114,7 +115,7 @@
                                 @can('services.change-status')
                                     <flux:dropdown>
                                         <flux:button size="sm" class="!px-2 !py-1" icon="check-badge"
-                                            icon:trailing="chevron-down" :disabled="$row->in_progress">
+                                            icon:trailing="chevron-down" :disabled="$row->is_running">
                                             Finalizar
                                         </flux:button>
 
@@ -228,12 +229,20 @@
             </div>
 
             {{-- aviso quando travado --}}
-            @if ($editingLocked && !$isViewing)
-                <div
-                    class="mt-5 mb-3 text-xs p-2 rounded bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
-                    Serviço finalizado: somente <strong>Pago</strong> e <strong>Descrição</strong> podem ser
-                    editados.
-                </div>
+            @if (!$isViewing)
+                @if ($isTerminalAtOpen || $isFlowLockedAtOpen)
+                    <div
+                        class="mt-5 mb-3 text-xs p-2 rounded bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
+                        Serviço finalizado: somente <strong>Pago</strong> e <strong>Descrição</strong> podem ser
+                        editados.
+                    </div>
+                @elseif ($isRunningAtOpen)
+                    <div
+                        class="mt-5 mb-3 text-xs p-2 rounded bg-blue-100 text-blue-900 dark:bg-blue-900/30 dark:text-blue-200">
+                        Serviço em execução: encerre a etapa atual para alterar o fluxo. Apenas <strong>Pago</strong> e
+                        <strong>Descrição</strong> estão liberados.
+                    </div>
+                @endif
             @endif
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -252,24 +261,42 @@
                         @endforeach
                     </flux:select>
                     <p class="text-xs text-zinc-500 mt-1">
-                        Selecione os status. A <strong>ordem</strong> é definida abaixo com os botões.
+                        Selecione os status. A <strong>ordem</strong> é definida abaixo.
+                        @if ($hasProgress)
+                            Etapas anteriores à atual estão bloqueadas (não podem ser removidas nem reordenadas).
+                        @endif
                     </p>
+
                 </div>
+
+                @if ($hasProgress && !$isViewing && !$editingLocked)
+                    <div
+                        class="mt-2 mb-3 text-xs p-2 rounded bg-blue-100 text-blue-900 dark:bg-blue-900/30 dark:text-blue-200">
+                        Este serviço já teve progresso. Você só pode alterar as etapas <strong>a partir</strong> da
+                        etapa atual.
+                        As etapas anteriores estão bloqueadas.
+                    </div>
+                @endif
 
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium mb-1">Ordem de execução</label>
 
                     @php
-                        $statusesById = $this->statuses->keyBy('id');
                         $orderedVisible = array_values(
                             array_filter($flow_order_ids, fn($id) => in_array((int) $id, $flow_status_ids, true)),
                         );
                         $lastIndex = count($orderedVisible) - 1;
+
+                        $currentIdx = collect($orderedVisible)->search((int) $current_status_id, true);
+                        $currentIdx = $currentIdx === false ? -1 : (int) $currentIdx;
                     @endphp
 
                     <ol class="space-y-2">
                         @foreach ($orderedVisible as $i => $sid)
-                            @php $s = $statusesById->get((int) $sid); @endphp
+                            @php
+                                $isPrefixLocked = $hasProgress && $i <= $currentIdx;
+                                $s = $statusesById->get((int) $sid);
+                            @endphp
                             <li
                                 class="flex items-center justify-between gap-2 p-2 rounded ring-1 ring-black/10 dark:ring-white/10">
                                 <div class="flex items-center gap-2">
@@ -283,10 +310,10 @@
                                 <div class="flex items-center gap-1">
                                     <flux:button size="xs" variant="ghost" icon="chevron-up"
                                         wire:click="moveUp({{ (int) $sid }})"
-                                        :disabled="$isViewing || $editingLocked || $i === 0" />
+                                        :disabled="$isViewing || $editingLocked || $isPrefixLocked || $i === 0" />
                                     <flux:button size="xs" variant="ghost" icon="chevron-down"
                                         wire:click="moveDown({{ (int) $sid }})"
-                                        :disabled="$isViewing || $editingLocked || $i === $lastIndex" />
+                                        :disabled="$isViewing || $editingLocked || $isPrefixLocked || $i === $lastIndex" />
                                 </div>
                             </li>
                         @endforeach
@@ -312,7 +339,7 @@
 
             <div class="flex justify-end items-center mt-2 gap-2">
                 <flux:button variant="ghost"
-                    wire:click="{{ $isViewing ? 'closeForm' : '$set(\'showForm\', false)' }}">Fechar</flux:button>
+                    wire:click="{{ $isViewing ? 'closeForm' : '$set(\'showForm\', false)' }}">Cancelar</flux:button>
                 @if (!$isViewing)
                     <flux:button variant="primary" color="green" wire:click="save" icon="check">Salvar
                     </flux:button>
