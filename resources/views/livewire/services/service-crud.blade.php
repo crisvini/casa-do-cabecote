@@ -122,7 +122,7 @@
                                         <flux:menu class="w-auto">
                                             @forelse ($this->terminalStatuses as $term)
                                                 <flux:menu.item
-                                                    wire:click="markAsTerminal({{ $row->id }}, {{ $term->id }})"
+                                                    wire:click="openConfirmManualFinalize({{ $row->id }}, {{ $term->id }})"
                                                     class="flex items-center gap-2">
                                                     <span class="inline-flex w-3.5 h-3.5 rounded-full ring-1 ring-black/10"
                                                         style="background-color: {{ $term->color }};"></span>
@@ -369,6 +369,18 @@
                 </flux:button>
             </div>
         </x-modal>
+
+        <x-modal wire:model="confirmingManualFinalize" title="Confirmar finalização" separator>
+            <p>{{ $manualFinalizeMessage }}</p>
+            <div class="flex justify-end items-center mt-2 gap-2">
+                <flux:button class="btn-ghost" wire:click="$set('confirmingManualFinalize', false)">Cancelar
+                </flux:button>
+                <flux:button color="green" icon="check" wire:click="performManualFinalize">
+                    Confirmar
+                </flux:button>
+            </div>
+        </x-modal>
+
 
     </div>
 </section>

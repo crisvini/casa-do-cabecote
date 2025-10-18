@@ -45,6 +45,10 @@ class ServiceCrud extends Component
     public bool $isTerminalAtOpen = false;
     public bool $isFlowLockedAtOpen = false;
     public array $locked_prefix_ids = [];
+    public bool $confirmingManualFinalize = false;
+    public ?int $manualFinalizeServiceId = null;
+    public ?int $manualFinalizeStatusId  = null;
+    public string $manualFinalizeMessage = '';
 
     public function rules(): array
     {
@@ -199,6 +203,55 @@ class ServiceCrud extends Component
         $this->isViewing     = true;
         $this->hasProgress = false;
         $this->showForm      = true;
+    }
+
+    public function openConfirmManualFinalize(int $serviceId, int $statusId): void
+    {
+        abort_unless(auth()->user()->can('services.change-status'), 403);
+
+        $service = Service::with(['currentStatus'])->findOrFail($serviceId);
+        $status  = Status::findOrFail($statusId);
+
+        if (!$status->is_terminal) {
+            $this->dispatch('notify', body: 'Apenas status terminal permitido aqui.', type: 'warning');
+            return;
+        }
+
+        // Mensagem amigável
+        $ordem  = $service->service_order ?? $service->id;
+        $stName = $status->name;
+
+        $this->manualFinalizeServiceId = $service->id;
+        $this->manualFinalizeStatusId  = $status->id;
+        $this->manualFinalizeMessage   = "Tem certeza que deseja finalizar o serviço #{$ordem} para o status \"{$stName}\"?";
+        $this->confirmingManualFinalize = true;
+    }
+
+    public function performManualFinalize(): void
+    {
+        abort_unless(auth()->user()->can('services.change-status'), 403);
+        abort_unless($this->manualFinalizeServiceId && $this->manualFinalizeStatusId, 404);
+
+        $service = Service::with('flow')->findOrFail($this->manualFinalizeServiceId);
+        $status  = Status::findOrFail($this->manualFinalizeStatusId);
+
+        if (!$status->is_terminal) {
+            $this->dispatch('notify', body: 'Apenas status terminal permitido aqui.', type: 'warning');
+            return;
+        }
+
+        if ($service->flow_locked || $service->isTerminal()) {
+            $this->dispatch('notify', body: 'Serviço já finalizado.', type: 'info');
+        } else {
+            $service->finalizeToTerminal(auth()->user(), $status->id);
+            $this->dispatch('notify', body: 'Serviço finalizado.');
+        }
+
+        // limpar estado do modal
+        $this->confirmingManualFinalize = false;
+        $this->manualFinalizeServiceId  = null;
+        $this->manualFinalizeStatusId   = null;
+        $this->manualFinalizeMessage    = '';
     }
 
     public function closeForm(): void

@@ -180,8 +180,21 @@ class Service extends Model
     public function finalizeToTerminal(\App\Models\User $user, ?int $terminalStatusId = null): void
     {
         // escolhe um terminal (primeiro da lista) se não vier ID
-        $terminalStatusId = $terminalStatusId
-            ?? \App\Models\Status::query()->where('is_terminal', true)->value('id');
+        if (!$terminalStatusId) {
+            // Tenta por "slug" FINALIZADO (nome slugificado)
+            $terminalStatusId = \App\Models\Status::query()
+                ->where('is_terminal', true)
+                ->whereRaw("LOWER(REPLACE(name, ' ', '-')) = 'finalizado'")
+                ->value('id');
+
+            // Fallback: primeiro terminal por id (comportamento anterior)
+            if (!$terminalStatusId) {
+                $terminalStatusId = \App\Models\Status::query()
+                    ->where('is_terminal', true)
+                    ->orderBy('id')
+                    ->value('id');
+            }
+        }
 
         if (!$terminalStatusId) {
             throw new \RuntimeException('Nenhum status terminal configurado.');
