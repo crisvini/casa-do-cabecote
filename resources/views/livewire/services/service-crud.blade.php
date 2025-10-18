@@ -143,10 +143,10 @@
 
                 {{-- NOVO: multiselect da trilha (ordem das etapas) --}}
                 <div class="md:col-span-2">
-                    <flux:select multiple searchable label="Fluxo (ordem das etapas)" wire:model="flow_status_ids"
-                        placeholder="Selecione as etapas na ordem desejada">
+                    <flux:select variant="listbox" multiple searchable label="Fluxo (ordem das etapas)"
+                        wire:model="flow_status_ids" placeholder="Selecione as etapas na ordem desejada">
                         @foreach ($this->statuses as $st)
-                            <flux:select.option :value="$st->id" :label="$st->name" />
+                            <flux:select.option :value="$st->id">{{ $st->name }}</flux:select.option>
                         @endforeach
                     </flux:select>
                     <p class="text-xs text-zinc-500 mt-1">
@@ -168,7 +168,10 @@
                     @endif
                 </div>
 
-                <flux:checkbox wire:model="paid" label="Pago" />
+                <flux:select wire:model="paid" label="Pago?">
+                    <flux:select.option value="0" label="Não" />
+                    <flux:select.option value="1" label="Sim" />
+                </flux:select>
                 <flux:input label="Concluído em" wire:model="completed_at" type="date" />
 
                 <div class="md:col-span-2">
