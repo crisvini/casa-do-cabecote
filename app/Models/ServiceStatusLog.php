@@ -17,12 +17,18 @@ class ServiceStatusLog extends Model
         'user_id',
         'started_at',
         'finished_at',
+        'finished_by'
     ];
 
     protected $casts = [
         'started_at'  => 'datetime',
         'finished_at' => 'datetime',
     ];
+
+    public function finisher()
+    {
+        return $this->belongsTo(\App\Models\User::class, 'finished_by');
+    }
 
     /*
     |--------------------------------------------------------------------------

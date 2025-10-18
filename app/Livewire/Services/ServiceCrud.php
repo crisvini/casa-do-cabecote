@@ -47,8 +47,16 @@ class ServiceCrud extends Component
             'cylinder_head'     => ['required', 'string', 'max:255'],
             'description'       => ['nullable', 'string'],
             'current_status_id' => ['required', Rule::exists('statuses', 'id')],
+            // Somente itens que NÃO são terminais e são selecionáveis podem ir ao fluxo
             'flow_status_ids'   => ['required', 'array', 'min:1'],
-            'flow_status_ids.*' => ['integer', Rule::exists('statuses', 'id')],
+            'flow_status_ids.*' => [
+                'integer',
+                Rule::exists('statuses', 'id')->where(
+                    fn($q) => $q
+                        ->where('is_terminal', false)
+                        ->where('is_selectable', true)
+                ),
+            ],
             'paid'              => ['boolean'],
             'completed_at'      => ['nullable', 'date'],
             'service_order'     => ['nullable', 'integer', 'min:1', Rule::unique('services', 'service_order')->ignore($this->editingId)],
@@ -112,13 +120,18 @@ class ServiceCrud extends Component
 
     protected function normalizeFlow(): void
     {
-        $this->flow_status_ids = array_map('intval', $this->flow_status_ids);
+        $allowed = Status::where('is_terminal', false)
+            ->where('is_selectable', true)
+            ->pluck('id')->map(fn($v) => (int)$v)->all();
 
-        // mantém ordem atual apenas dos que continuam selecionados
+        $this->flow_status_ids = array_values(array_intersect(
+            array_map('intval', $this->flow_status_ids),
+            $allowed
+        ));
+
         $currentOrder = array_map('intval', $this->flow_order_ids);
         $this->flow_order_ids = array_values(array_intersect($currentOrder, $this->flow_status_ids));
 
-        // adiciona novos selecionados ao final
         foreach ($this->flow_status_ids as $id) {
             if (!in_array($id, $this->flow_order_ids, true)) {
                 $this->flow_order_ids[] = $id;
@@ -165,31 +178,37 @@ class ServiceCrud extends Component
         $data = $this->validate();
 
         DB::transaction(function () use ($data) {
-            // se não arrastou nada, usa a seleção como fallback
             $order = !empty($this->flow_order_ids) ? $this->flow_order_ids : $this->flow_status_ids;
-
-            if (!$this->editingId) {
-                $data['current_status_id'] = (int) $order[0];
-            }
 
             /** @var \App\Models\Service $service */
             $service = $this->editingId
-                ? tap(Service::findOrFail($this->editingId))->update($data)
-                : Service::create($data);
+                ? Service::findOrFail($this->editingId)
+                : new Service();
 
-            $service->flow()->delete();
-            foreach (array_values($order) as $i => $statusId) {
-                $service->flow()->create([
-                    'status_id'  => (int) $statusId,
-                    'step_order' => $i + 1,
-                ]);
+            // se estiver travado, não mexe no fluxo/ordem
+            $canEditFlow = !$service->exists || !$service->flow_locked;
+
+            $service->fill($data);
+            if (!$service->exists) {
+                $service->current_status_id = (int) $order[0];
             }
+            $service->save();
 
-            if ($this->editingId && !in_array($service->current_status_id, $order, true)) {
-                $service->updateQuietly([
-                    'current_status_id' => (int) $order[0],
-                    'completed_at'      => null
-                ]);
+            if ($canEditFlow) {
+                $service->flow()->delete();
+                foreach (array_values($order) as $i => $statusId) {
+                    $service->flow()->create([
+                        'status_id'  => (int) $statusId,
+                        'step_order' => $i + 1,
+                    ]);
+                }
+
+                if ($this->editingId && !in_array($service->current_status_id, $order, true)) {
+                    $service->updateQuietly([
+                        'current_status_id' => (int) $order[0],
+                        'completed_at'      => null,
+                    ]);
+                }
             }
         });
 
@@ -217,21 +236,46 @@ class ServiceCrud extends Component
     public function startService(int $id): void
     {
         abort_unless(auth()->user()->can('services.start'), 403);
-
         $service = Service::findOrFail($id);
-        $service->start(auth()->user()); // cria/garante o log de início do status atual
-
+        if ($service->flow_locked || $service->isTerminal()) {
+            $this->dispatch('notify', body: 'Serviço finalizado. Ação não permitida.', type: 'warning');
+            return;
+        }
+        $service->start(auth()->user());
         $this->dispatch('notify', body: 'Serviço iniciado.');
+    }
+
+    public function markAsTerminal(int $serviceId, int $statusId): void
+    {
+        abort_unless(auth()->user()->can('services.change-status'), 403);
+
+        $status = Status::findOrFail($statusId);
+        if (!$status->is_terminal) {
+            $this->dispatch('notify', body: 'Apenas status terminal permitido aqui.', type: 'warning');
+            return;
+        }
+
+        $service = Service::with('flow')->findOrFail($serviceId);
+
+        if ($service->flow_locked || $service->isTerminal()) {
+            $this->dispatch('notify', body: 'Serviço já finalizado.', type: 'info');
+            return;
+        }
+
+        $service->finalizeToTerminal(auth()->user(), $status->id);
+        $this->dispatch('notify', body: 'Serviço finalizado.');
     }
 
     public function finishService(int $id): void
     {
         abort_unless(auth()->user()->can('services.finish'), 403);
-
         $service = Service::findOrFail($id);
-        $service->finish(auth()->user()); // finaliza o passo atual e AVANÇA pro PRÓXIMO da trilha
-
-        $this->dispatch('notify', body: 'Serviço avançado para a próxima etapa.');
+        if ($service->flow_locked || $service->isTerminal()) {
+            $this->dispatch('notify', body: 'Serviço finalizado. Ação não permitida.', type: 'warning');
+            return;
+        }
+        $service->finish(auth()->user()); // se última, pula para terminal
+        $this->dispatch('notify', body: 'Serviço avançado.');
     }
 
     public function changeStatus(int $id, int $statusId): void
@@ -274,7 +318,12 @@ class ServiceCrud extends Component
 
     public function getStatusesProperty()
     {
-        return Status::orderBy('id')->get(['id', 'name', 'slug', 'color']);
+        return Status::orderBy('id')->get(['id', 'name', 'slug', 'color', 'is_selectable', 'is_terminal']);
+    }
+
+    public function getTerminalStatusesProperty()
+    {
+        return Status::where('is_terminal', true)->orderBy('id')->get(['id', 'name', 'color']);
     }
 
     public function openConfirmToggle(int $id): void

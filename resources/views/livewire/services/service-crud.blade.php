@@ -33,10 +33,11 @@
             container:class="overflow-auto max-h-screen rounded-lg" locale="pt-BR">
             <flux:table.columns sticky>
                 <flux:table.column class="text-center">#</flux:table.column>
-                <flux:table.column class="text-center">Ordem</flux:table.column>
+                <flux:table.column class="text-center">O.S.</flux:table.column>
                 <flux:table.column class="truncate">Cliente</flux:table.column>
                 <flux:table.column class="truncate">Cabeçote</flux:table.column>
-                <flux:table.column class="text-center">Status</flux:table.column>
+                <flux:table.column class="text-center">Status Atual</flux:table.column>
+                <flux:table.column class="text-center">Encerrar</flux:table.column>
                 <flux:table.column class="text-center">Pago</flux:table.column>
                 <flux:table.column class="text-center">Concluído em</flux:table.column>
                 <flux:table.column class="text-center">Em execução?</flux:table.column>
@@ -67,7 +68,7 @@
 
                             @can('services.change-status')
                                 <flux:dropdown>
-                                    <flux:button size="sm"
+                                    <flux:button size="sm" :disabled="$row->completed_at ? true : false"
                                         class="!px-2 w-full !py-1 rounded-md shadow-sm border border-black/10 dark:border-white/10"
                                         style="background-color: {{ $st?->color ?? '#E5E7EB' }}; color: {{ contrast_color($st?->color ?? '#E5E7EB') }};"
                                         icon:trailing="chevron-down">
@@ -98,6 +99,40 @@
                                     {{ $st?->name ?? '—' }}
                                 </span>
                             @endcan
+                        </flux:table.cell>
+
+                        <flux:table.cell class="text-center">
+                            @php
+                                $isLocked = (bool) $row->flow_locked;
+                                $isTerminal = (bool) optional($row->currentStatus)->is_terminal;
+                            @endphp
+
+                            @if ($isTerminal || $isLocked)
+                                <flux:badge size="sm" variant="solid" color="green">Finalizado</flux:badge>
+                            @else
+                                @can('services.change-status')
+                                    <flux:dropdown>
+                                        <flux:button size="sm" class="!px-2 !py-1" icon="check-badge"
+                                            :disabled="$row->in_progress">
+                                            Finalizar
+                                        </flux:button>
+
+                                        <flux:menu class="w-auto">
+                                            @forelse ($this->terminalStatuses as $term)
+                                                <flux:menu.item
+                                                    wire:click="markAsTerminal({{ $row->id }}, {{ $term->id }})"
+                                                    class="flex items-center gap-2">
+                                                    <span class="inline-flex w-3.5 h-3.5 rounded-full ring-1 ring-black/10"
+                                                        style="background-color: {{ $term->color }};"></span>
+                                                    <span class="flex-1">{{ $term->name }}</span>
+                                                </flux:menu.item>
+                                            @empty
+                                                <div class="px-3 py-2 text-xs opacity-70">Sem status terminal</div>
+                                            @endforelse
+                                        </flux:menu>
+                                    </flux:dropdown>
+                                @endcan
+                            @endif
                         </flux:table.cell>
 
                         <flux:table.cell>
@@ -139,25 +174,30 @@
                                 $canStart = auth()->user()->can('services.start');
                                 $canFinish = auth()->user()->can('services.finish');
                                 $canToggle = ($isRunning && $canFinish) || (!$isRunning && $canStart);
+                                $isLocked = (bool) $row->flow_locked;
+                                $isTerminal = (bool) optional($row->currentStatus)->is_terminal;
                             @endphp
 
                             <div class="flex flex-row gap-2 justify-end">
-                                @if ($canToggle)
-                                    <flux:tooltip :content="$isRunning ? 'Finalizar' : 'Iniciar'">
+                                @if ($canToggle && !$isLocked && !$isTerminal)
+                                    <flux:tooltip
+                                        :content="$row->completed_at ? 'Serviço já finalizado' : ($isRunning ? 'Finalizar' : 'Iniciar')">
                                         <flux:button size="sm" :icon="$isRunning ? 'check' : 'play'"
-                                            :color="$isRunning ? 'green' : null" class="cursor-pointer"
-                                            wire:click="openConfirmToggle({{ $row->id }})" />
+                                            :color="$isRunning ? 'green' : null" variant="primary"
+                                            class="cursor-pointer" wire:click="openConfirmToggle({{ $row->id }})"
+                                            :disabled="$row->completed_at ? true : false" />
                                     </flux:tooltip>
                                 @endif
 
                                 @can('services.manage')
                                     <flux:tooltip content="Editar">
-                                        <flux:button size="sm" icon="pencil-square" variant="ghost"
-                                            class="cursor-pointer" wire:click="openEdit({{ $row->id }})" />
+                                        <flux:button size="sm" icon="pencil-square" variant="primary"
+                                            class="cursor-pointer" :disabled="$isLocked || $isTerminal"
+                                            wire:click="openEdit({{ $row->id }})" />
                                     </flux:tooltip>
                                     <flux:tooltip content="Excluir">
-                                        <flux:button size="sm" icon="trash" color="red" class="cursor-pointer"
-                                            wire:click="confirmDelete({{ $row->id }})" />
+                                        <flux:button size="sm" icon="trash" color="red" variant="primary"
+                                            class="cursor-pointer" wire:click="confirmDelete({{ $row->id }})" />
                                     </flux:tooltip>
                                 @endcan
                             </div>
@@ -180,7 +220,7 @@
                 <div class="md:col-span-2">
                     <flux:select variant="listbox" multiple searchable label="Fluxo (status incluídos)"
                         wire:model.live="flow_status_ids" placeholder="Selecione os status">
-                        @foreach ($this->statuses as $st)
+                        @foreach ($this->statuses->where('is_terminal', false)->where('is_selectable', true) as $st)
                             <flux:select.option :value="$st->id">{{ $st->name }}</flux:select.option>
                         @endforeach
                     </flux:select>
@@ -232,7 +272,7 @@
                     <flux:select.option value="0" label="Não" />
                     <flux:select.option value="1" label="Sim" />
                 </flux:select>
-                <flux:input label="Concluído em" wire:model="completed_at" type="date" />
+                <flux:input label="Concluído em" wire:model="completed_at" type="date" disabled />
 
                 <div class="md:col-span-2">
                     <x-textarea label="Descrição" wire:model="description" rows="3" />

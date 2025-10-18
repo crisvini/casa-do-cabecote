@@ -35,9 +35,11 @@ class StatusesSeeder extends Seeder
             Status::updateOrCreate(
                 ['slug' => $slug],
                 [
-                    'name'  => $item['name'],
-                    'slug'  => $slug,
-                    'color' => $item['color'],
+                    'name'          => $item['name'],
+                    'slug'          => $slug,
+                    'color'         => $item['color'],
+                    'is_selectable' => $item['name'] === ('FINALIZADO' || 'MORTO' || 'PARADO') ? false : true,
+                    'is_terminal'   => $item['color'] === ('FINALIZADO' || 'MORTO') ? true : false,
                 ]
             );
 
