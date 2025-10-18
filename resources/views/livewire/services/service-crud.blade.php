@@ -23,7 +23,8 @@
             </flux:select>
 
             @can('services.manage')
-                <flux:button icon="plus" class="btn-primary ml-auto w-full md:w-auto" wire:click="openCreate">
+                <flux:button icon="plus" variant="primary" color="green" class="btn-primary ml-auto w-full md:w-auto"
+                    wire:click="openCreate">
                     Novo serviço
                 </flux:button>
             @endcan
@@ -37,7 +38,7 @@
                 <flux:table.column class="truncate">Cliente</flux:table.column>
                 <flux:table.column class="truncate">Cabeçote</flux:table.column>
                 <flux:table.column class="text-center">Status Atual</flux:table.column>
-                <flux:table.column class="text-center">Encerrar</flux:table.column>
+                <flux:table.column class="text-center">Encerrar/Parar</flux:table.column>
                 <flux:table.column class="text-center">Pago</flux:table.column>
                 <flux:table.column class="text-center">Concluído em</flux:table.column>
                 <flux:table.column class="text-center">Em execução?</flux:table.column>
@@ -101,7 +102,7 @@
                             @endcan
                         </flux:table.cell>
 
-                        <flux:table.cell class="text-center">
+                        <flux:table.cell>
                             @php
                                 $isLocked = (bool) $row->flow_locked;
                                 $isTerminal = (bool) optional($row->currentStatus)->is_terminal;
@@ -113,7 +114,7 @@
                                 @can('services.change-status')
                                     <flux:dropdown>
                                         <flux:button size="sm" class="!px-2 !py-1" icon="check-badge"
-                                            :disabled="$row->in_progress">
+                                            icon:trailing="chevron-down" :disabled="$row->in_progress">
                                             Finalizar
                                         </flux:button>
 
@@ -141,7 +142,8 @@
                             </flux:badge>
                         </flux:table.cell>
 
-                        <flux:table.cell>{{ optional($row->completed_at)->format('d/m/Y') ?? '—' }}</flux:table.cell>
+                        <flux:table.cell>{{ optional($row->completed_at)->format('d/m/Y H:i') ?? '—' }}
+                        </flux:table.cell>
 
                         <flux:table.cell>
                             @if ($row->in_progress)
@@ -179,21 +181,25 @@
                             @endphp
 
                             <div class="flex flex-row gap-2 justify-end">
-                                @if ($canToggle && !$isLocked && !$isTerminal)
+                                @if ($canToggle)
                                     <flux:tooltip
                                         :content="$row->completed_at ? 'Serviço já finalizado' : ($isRunning ? 'Finalizar' : 'Iniciar')">
                                         <flux:button size="sm" :icon="$isRunning ? 'check' : 'play'"
                                             :color="$isRunning ? 'green' : null" variant="primary"
                                             class="cursor-pointer" wire:click="openConfirmToggle({{ $row->id }})"
-                                            :disabled="$row->completed_at ? true : false" />
+                                            :disabled="($row->completed_at || ($isLocked && $isTerminal)) ? true : false" />
                                     </flux:tooltip>
                                 @endif
+
+                                <flux:tooltip content="Ver">
+                                    <flux:button size="sm" icon="eye" variant="primary" class="cursor-pointer"
+                                        wire:click="openView({{ $row->id }})" />
+                                </flux:tooltip>
 
                                 @can('services.manage')
                                     <flux:tooltip content="Editar">
                                         <flux:button size="sm" icon="pencil-square" variant="primary"
-                                            class="cursor-pointer" :disabled="$isLocked || $isTerminal"
-                                            wire:click="openEdit({{ $row->id }})" />
+                                            class="cursor-pointer" wire:click="openEdit({{ $row->id }})" />
                                     </flux:tooltip>
                                     <flux:tooltip content="Excluir">
                                         <flux:button size="sm" icon="trash" color="red" variant="primary"
@@ -209,17 +215,35 @@
         </flux:table>
 
         {{-- Modal Form --}}
-        <x-modal wire:model="showForm" title="{{ $editingId ? 'Editar serviço' : 'Novo serviço' }}" separator>
+        <x-modal wire:model="showForm" separator>
             @php $statusesById = $this->statuses->keyBy('id'); @endphp
 
+            <div class="mb-3">
+                <flux:heading size="lg">
+                    {{ $isViewing ? 'Visualizar serviço' : ($editingId ? 'Editar serviço' : 'Novo serviço') }}
+                </flux:heading>
+            </div>
+
+            {{-- aviso quando travado --}}
+            @if ($editingLocked && !$isViewing)
+                <div
+                    class="mt-5 mb-3 text-xs p-2 rounded bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
+                    Serviço finalizado: somente <strong>Pago</strong> e <strong>Descrição</strong> podem ser
+                    editados.
+                </div>
+            @endif
+
             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <flux:input label="Cliente" wire:model="client" required />
-                <flux:input label="Cabeçote" wire:model="cylinder_head" required />
-                <flux:input label="O.S. (opcional)" wire:model="service_order" type="number" min="1" />
+                <flux:input label="Cliente" wire:model="client" :disabled="$isViewing || $editingLocked" required />
+                <flux:input label="Cabeçote" wire:model="cylinder_head" :disabled="$isViewing || $editingLocked"
+                    required />
+                <flux:input label="O.S. (opcional)" wire:model="service_order" type="number" min="1"
+                    :disabled="$isViewing || $editingLocked" />
 
                 <div class="md:col-span-2">
                     <flux:select variant="listbox" multiple searchable label="Fluxo (status incluídos)"
-                        wire:model.live="flow_status_ids" placeholder="Selecione os status">
+                        wire:model.live="flow_status_ids" placeholder="Selecione os status"
+                        :disabled="$isViewing || $editingLocked">
                         @foreach ($this->statuses->where('is_terminal', false)->where('is_selectable', true) as $st)
                             <flux:select.option :value="$st->id">{{ $st->name }}</flux:select.option>
                         @endforeach
@@ -255,9 +279,11 @@
 
                                 <div class="flex items-center gap-1">
                                     <flux:button size="xs" variant="ghost" icon="chevron-up"
-                                        wire:click="moveUp({{ (int) $sid }})" :disabled="$i === 0" />
+                                        wire:click="moveUp({{ (int) $sid }})"
+                                        :disabled="$isViewing || $editingLocked || $i === 0" />
                                     <flux:button size="xs" variant="ghost" icon="chevron-down"
-                                        wire:click="moveDown({{ (int) $sid }})" :disabled="$i === $lastIndex" />
+                                        wire:click="moveDown({{ (int) $sid }})"
+                                        :disabled="$isViewing || $editingLocked || $i === $lastIndex" />
                                 </div>
                             </li>
                         @endforeach
@@ -268,30 +294,38 @@
                     @endif
                 </div>
 
-                <flux:select wire:model="paid" label="Pago?">
+                {{-- SEMPRE editáveis --}}
+                <flux:select wire:model="paid" label="Pago?" :disabled="$isViewing">
                     <flux:select.option value="0" label="Não" />
                     <flux:select.option value="1" label="Sim" />
                 </flux:select>
-                <flux:input label="Concluído em" wire:model="completed_at" type="date" disabled />
+
+                <flux:input label="Concluído em" wire:model="completed_at" disabled />
 
                 <div class="md:col-span-2">
-                    <x-textarea label="Descrição" wire:model="description" rows="3" />
+                    <x-textarea label="Descrição" wire:model="description" rows="3" :disabled="$isViewing" />
                 </div>
             </div>
 
             <div class="flex justify-end items-center mt-2 gap-2">
-                <flux:button class="btn-ghost" wire:click="$set('showForm', false)">Cancelar</flux:button>
-                <flux:button class="btn-primary" wire:click="save" icon="check">Salvar</flux:button>
+                <flux:button variant="ghost"
+                    wire:click="{{ $isViewing ? 'closeForm' : '$set(\'showForm\', false)' }}">Fechar</flux:button>
+                @if (!$isViewing)
+                    <flux:button variant="primary" color="green" wire:click="save" icon="check">Salvar
+                    </flux:button>
+                @endif
             </div>
         </x-modal>
-
 
         {{-- Modal Delete --}}
         <x-modal wire:model="confirmingDelete" title="Confirmar exclusão" icon="o-exclamation-triangle" separator>
             <p>Tem certeza que deseja excluir este serviço? Esta ação não pode ser desfeita.</p>
             <div class="flex justify-end items-center mt-2 gap-2">
-                <flux:button class="btn-ghost" wire:click="$set('confirmingDelete', false)">Cancelar</flux:button>
-                <flux:button class="btn-error" wire:click="delete" icon="trash">Excluir</flux:button>
+                <flux:button variant="ghost" class="btn-ghost" wire:click="$set('confirmingDelete', false)">
+                    Cancelar
+                </flux:button>
+                <flux:button variant="primary" color="red" wire:click="delete" icon="trash">Excluir
+                </flux:button>
             </div>
         </x-modal>
 

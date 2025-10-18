@@ -38,7 +38,8 @@ class ServiceCrud extends Component
     public ?int $toggleId = null;
     public string $confirmAction = 'start'; // 'start' | 'finish'
     public string $confirmMessage = '';
-
+    public bool $editingLocked = false;
+    public bool $isViewing = false;
 
     public function rules(): array
     {
@@ -92,6 +93,8 @@ class ServiceCrud extends Component
         $this->flow_order_ids  = array_map('intval', $first);
         $this->paid = false;
 
+        $this->editingLocked = false;
+        $this->isViewing = false;
         $this->showForm = true;
     }
 
@@ -107,7 +110,7 @@ class ServiceCrud extends Component
             'description'       => $service->description,
             'current_status_id' => $service->current_status_id,
             'paid'              => (bool) $service->paid,
-            'completed_at'      => optional($service->completed_at)->format('Y-m-d'),
+            'completed_at'      => optional($service->completed_at)->format('d/m/Y H:i'),
             'service_order'     => $service->service_order,
         ]);
 
@@ -115,7 +118,39 @@ class ServiceCrud extends Component
         $this->flow_status_ids = array_map('intval', $flow);
         $this->flow_order_ids  = array_map('intval', $flow);
 
+        $this->editingLocked = (bool) $service->flow_locked || (bool) optional($service->currentStatus)->is_terminal;
+        $this->isViewing = false;
         $this->showForm = true;
+    }
+
+    public function openView(int $id): void
+    {
+        $service = Service::with('flow', 'currentStatus')->findOrFail($id);
+
+        $this->fill([
+            'editingId'         => $service->id,
+            'client'            => $service->client,
+            'cylinder_head'     => $service->cylinder_head,
+            'description'       => $service->description,
+            'current_status_id' => $service->current_status_id,
+            'paid'              => (bool) $service->paid,
+            'completed_at'      => optional($service->completed_at)->format('d/m/Y H:i'),
+            'service_order'     => $service->service_order,
+        ]);
+
+        $flow = $service->flow()->pluck('status_id')->all();
+        $this->flow_status_ids = array_map('intval', $flow);
+        $this->flow_order_ids  = array_map('intval', $flow);
+
+        $this->editingLocked = true; // não importa; tudo ficará desabilitado
+        $this->isViewing     = true;
+        $this->showForm      = true;
+    }
+
+    public function closeForm(): void
+    {
+        $this->showForm = false;
+        $this->isViewing = false;
     }
 
     protected function normalizeFlow(): void
@@ -175,6 +210,14 @@ class ServiceCrud extends Component
     public function save(): void
     {
         abort_unless(auth()->user()->can('services.manage'), 403);
+
+        if ($this->isViewing) {
+            // apenas ignora / fecha
+            $this->showForm = false;
+            $this->isViewing = false;
+            return;
+        }
+
         $data = $this->validate();
 
         DB::transaction(function () use ($data) {
@@ -185,30 +228,38 @@ class ServiceCrud extends Component
                 ? Service::findOrFail($this->editingId)
                 : new Service();
 
-            // se estiver travado, não mexe no fluxo/ordem
-            $canEditFlow = !$service->exists || !$service->flow_locked;
+            // se estiver travado (finalizado), só permite pago/descrição
+            if ($service->exists && ($service->flow_locked || $service->isTerminal())) {
+                $service->update([
+                    'paid'        => (bool) $data['paid'],
+                    'description' => $data['description'] ?? null,
+                ]);
 
+                // NÃO mexe em fluxo/ordem/status/etc.
+                return;
+            }
+
+            // fluxo normal (não-finalizado)
             $service->fill($data);
             if (!$service->exists) {
                 $service->current_status_id = (int) $order[0];
             }
             $service->save();
 
-            if ($canEditFlow) {
-                $service->flow()->delete();
-                foreach (array_values($order) as $i => $statusId) {
-                    $service->flow()->create([
-                        'status_id'  => (int) $statusId,
-                        'step_order' => $i + 1,
-                    ]);
-                }
+            // pode editar fluxo/ordem
+            $service->flow()->delete();
+            foreach (array_values($order) as $i => $statusId) {
+                $service->flow()->create([
+                    'status_id'  => (int) $statusId,
+                    'step_order' => $i + 1,
+                ]);
+            }
 
-                if ($this->editingId && !in_array($service->current_status_id, $order, true)) {
-                    $service->updateQuietly([
-                        'current_status_id' => (int) $order[0],
-                        'completed_at'      => null,
-                    ]);
-                }
+            if ($this->editingId && !in_array($service->current_status_id, $order, true)) {
+                $service->updateQuietly([
+                    'current_status_id' => (int) $order[0],
+                    'completed_at'      => null,
+                ]);
             }
         });
 

@@ -26,7 +26,7 @@ class Service extends Model
     protected $casts = [
         'paid'         => 'boolean',
         'in_progress'  => 'boolean',
-        'completed_at' => 'date',
+        'completed_at' => 'datetime',
     ];
 
     /*
