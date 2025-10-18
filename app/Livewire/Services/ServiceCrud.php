@@ -6,7 +6,6 @@ use App\Models\Service;
 use App\Models\Status;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Layout;
-use Livewire\Attributes\On;
 use Livewire\Component;
 use Livewire\WithPagination;
 use Illuminate\Support\Facades\DB;
@@ -19,7 +18,7 @@ class ServiceCrud extends Component
     // filtros
     public string $search = '';
     public ?int $statusFilter = null;
-    public ?string $paidFilter = null; // '1','0',null
+    public ?string $paidFilter = null;
 
     // form (create/edit)
     public ?int $editingId = null;
@@ -29,12 +28,17 @@ class ServiceCrud extends Component
     public ?string $client = '';
     public ?string $cylinder_head = '';
     public ?string $description = '';
-    public ?string $completed_at = null; // 'YYYY-MM-DD'
+    public ?string $completed_at = null;
     public bool $paid = false;
     public ?int $service_order = null;
 
     public bool $showForm = false;
     public bool $confirmingDelete = false;
+    public bool $confirmingToggle = false;
+    public ?int $toggleId = null;
+    public string $confirmAction = 'start'; // 'start' | 'finish'
+    public string $confirmMessage = '';
+
 
     public function rules(): array
     {
@@ -75,10 +79,10 @@ class ServiceCrud extends Component
         abort_unless(auth()->user()->can('services.manage'), 403);
         $this->resetForm();
 
-        // sugere pelo menos 1 status
         $first = Status::query()->orderBy('id')->limit(1)->pluck('id')->all();
-        $this->flow_status_ids = $first;
-        $this->flow_order_ids  = $first;
+        $this->flow_status_ids = array_map('intval', $first);
+        $this->flow_order_ids  = array_map('intval', $first);
+        $this->paid = false;
 
         $this->showForm = true;
     }
@@ -99,19 +103,22 @@ class ServiceCrud extends Component
             'service_order'     => $service->service_order,
         ]);
 
-        // selecionados = flow; ordem = flow
         $flow = $service->flow()->pluck('status_id')->all();
-        $this->flow_status_ids = $flow;
-        $this->flow_order_ids  = $flow;
+        $this->flow_status_ids = array_map('intval', $flow);
+        $this->flow_order_ids  = array_map('intval', $flow);
 
         $this->showForm = true;
     }
 
-    public function updatedFlowStatusIds(): void
+    protected function normalizeFlow(): void
     {
-        // mantém apenas os que ainda estão selecionados, na ordem atual
-        $this->flow_order_ids = array_values(array_intersect($this->flow_order_ids, $this->flow_status_ids));
-        // adiciona novos ao final
+        $this->flow_status_ids = array_map('intval', $this->flow_status_ids);
+
+        // mantém ordem atual apenas dos que continuam selecionados
+        $currentOrder = array_map('intval', $this->flow_order_ids);
+        $this->flow_order_ids = array_values(array_intersect($currentOrder, $this->flow_status_ids));
+
+        // adiciona novos selecionados ao final
         foreach ($this->flow_status_ids as $id) {
             if (!in_array($id, $this->flow_order_ids, true)) {
                 $this->flow_order_ids[] = $id;
@@ -119,10 +126,37 @@ class ServiceCrud extends Component
         }
     }
 
-    public function reorderFlow(array $orderedIds): void
+    public function updatedFlowStatusIds(): void
     {
-        // recebe ['3','7','9', ...] e guarda como int
-        $this->flow_order_ids = array_map('intval', $orderedIds);
+        $this->normalizeFlow();
+    }
+
+    public function moveUp(int $statusId): void
+    {
+        $this->normalizeFlow();
+
+        $statusId = (int) $statusId;
+        $idx = array_search($statusId, $this->flow_order_ids, true);
+
+        if ($idx !== false && $idx > 0) {
+            [$this->flow_order_ids[$idx - 1], $this->flow_order_ids[$idx]] =
+                [$this->flow_order_ids[$idx], $this->flow_order_ids[$idx - 1]];
+            $this->flow_order_ids = array_values($this->flow_order_ids);
+        }
+    }
+
+    public function moveDown(int $statusId): void
+    {
+        $this->normalizeFlow();
+
+        $statusId = (int) $statusId;
+        $idx = array_search($statusId, $this->flow_order_ids, true);
+
+        if ($idx !== false && $idx < count($this->flow_order_ids) - 1) {
+            [$this->flow_order_ids[$idx + 1], $this->flow_order_ids[$idx]] =
+                [$this->flow_order_ids[$idx], $this->flow_order_ids[$idx + 1]];
+            $this->flow_order_ids = array_values($this->flow_order_ids);
+        }
     }
 
     public function save(): void
@@ -238,18 +272,55 @@ class ServiceCrud extends Component
         $this->current_status_id = Status::query()->value('id');
     }
 
-    #[On('service-updated')] // gancho se quiser emitir de outros lugares
-    public function refreshList(): void {}
-
     public function getStatusesProperty()
     {
         return Status::orderBy('id')->get(['id', 'name', 'slug', 'color']);
     }
 
+    public function openConfirmToggle(int $id): void
+    {
+        $service = Service::with(['currentStatus', 'logs' => fn($q) => $q->whereNull('finished_at')])
+            ->findOrFail($id);
+
+        $hasOpenLog = $service->logs
+            ->firstWhere('status_id', $service->current_status_id) !== null;
+
+        $this->toggleId      = $service->id;
+        $this->confirmAction = $hasOpenLog ? 'finish' : 'start';
+
+        $acao     = $hasOpenLog ? 'finalizar' : 'iniciar';
+        $stName   = optional($service->currentStatus)->name ?? '—';
+        $ordem    = $service->service_order ?? $service->id;
+
+        $this->confirmMessage = "Tem certeza que deseja {$acao} o serviço #{$ordem} ({$service->client} – {$service->cylinder_head}) na etapa \"{$stName}\"?";
+        $this->confirmingToggle = true;
+    }
+
+    public function performToggle(): void
+    {
+        abort_unless($this->toggleId, 404);
+
+        $service = Service::findOrFail($this->toggleId);
+
+        if ($this->confirmAction === 'finish') {
+            abort_unless(auth()->user()->can('services.finish'), 403);
+            $service->finish(auth()->user());
+            $this->dispatch('notify', body: 'Serviço finalizado e avançado para a próxima etapa.');
+        } else {
+            abort_unless(auth()->user()->can('services.start'), 403);
+            $service->start(auth()->user());
+            $this->dispatch('notify', body: 'Serviço iniciado.');
+        }
+
+        $this->confirmingToggle = false;
+        $this->toggleId = null;
+    }
+
+
     public function render()
     {
         $query = Service::query()
-            ->with('currentStatus')
+            ->with(['currentStatus', 'flow', 'logs'])
             ->when($this->search !== '', function ($q) {
                 $q->where(function ($q2) {
                     $q2->where('client', 'like', "%{$this->search}%")

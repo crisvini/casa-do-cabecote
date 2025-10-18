@@ -19,11 +19,13 @@ class Service extends Model
         'description',
         'current_status_id',
         'paid',
+        'in_progress',
         'completed_at',
     ];
 
     protected $casts = [
         'paid'         => 'boolean',
+        'in_progress'  => 'boolean',
         'completed_at' => 'date',
     ];
 
@@ -106,16 +108,18 @@ class Service extends Model
 
     public function start(\App\Models\User $user): void
     {
-        // cria log de início para o status atual, se ainda não existir um aberto
         $this->logs()->firstOrCreate(
             ['status_id' => $this->current_status_id, 'finished_at' => null],
             ['user_id' => $user->id, 'started_at' => now()]
         );
+
+        // marca como em execução
+        $this->updateQuietly(['in_progress' => true]);
     }
 
     public function finish(\App\Models\User $user): void
     {
-        // fecha o log aberto do status atual
+        // fecha o log em aberto da etapa atual
         $log = $this->logs()
             ->where('status_id', $this->current_status_id)
             ->whereNull('finished_at')
@@ -126,20 +130,36 @@ class Service extends Model
             $log->update(['finished_at' => now(), 'user_id' => $user->id]);
         }
 
-        // acha o passo atual na trilha
-        $currentStep = $this->flow()->where('status_id', $this->current_status_id)->first();
+        // 1) Descobre a ordem (step_order) da etapa atual dentro do flow deste serviço
+        $currentOrder = $this->flow()
+            ->where('status_id', $this->current_status_id)
+            ->value('step_order'); // int|null
 
-        // próximo passo da trilha
-        $next = $currentStep
-            ? $this->flow()->where('step_order', '>', $currentStep->step_order)->orderBy('step_order')->first()
-            : null;
+        // Se não encontrou a etapa atual no flow, só marca como não-executando e sai
+        if ($currentOrder === null) {
+            $this->updateQuietly(['in_progress' => false]);
+            return;
+        }
+
+        // 2) Busca a próxima etapa do flow (maior step_order)
+        $next = $this->flow()
+            ->where('step_order', '>', $currentOrder)
+            ->orderBy('step_order')
+            ->first();
 
         if ($next) {
-            // avança para o próximo status do flow
-            $this->update(['current_status_id' => $next->status_id]);
+            // Avança para a próxima etapa; fica parado até alguém iniciar a próxima
+            $this->updateQuietly([
+                'current_status_id' => (int) $next->status_id,
+                'in_progress'       => false,
+                'completed_at'      => null,
+            ]);
         } else {
-            // se não tem próximo, conclui o serviço
-            $this->update(['completed_at' => now()]);
+            // Não há próxima etapa: serviço concluído
+            $this->updateQuietly([
+                'completed_at' => now(),
+                'in_progress'  => false,
+            ]);
         }
     }
 

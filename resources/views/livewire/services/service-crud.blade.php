@@ -39,6 +39,7 @@
                 <flux:table.column class="text-center">Status</flux:table.column>
                 <flux:table.column class="text-center">Pago</flux:table.column>
                 <flux:table.column class="text-center">Concluído em</flux:table.column>
+                <flux:table.column class="text-center">Em execução?</flux:table.column>
                 <flux:table.column align="end" class="text-end">Ações</flux:table.column>
             </flux:table.columns>
 
@@ -54,12 +55,14 @@
 
                         <flux:table.cell>
                             @php
+                                // ids do flow na ordem (service_status_flows.step_order)
+                                $flowIds = $row->flow->pluck('status_id')->all();
+
+                                // mapa id => Status para pegar name/color sem perder a ordem do flow
+                                $statusMap = $this->statuses->whereIn('id', $flowIds)->keyBy('id');
+
+                                // status atual (para o botão)
                                 $st = $row->currentStatus;
-                                $isAdmin = auth()->user()->hasRole('admin');
-                                // status permitidos para troca: admin vê todos; demais veem só a trilha do serviço
-                                $allowed = $isAdmin
-                                    ? $this->statuses
-                                    : $this->statuses->whereIn('id', $row->flow->pluck('status_id'));
                             @endphp
 
                             @can('services.change-status')
@@ -72,15 +75,20 @@
                                     </flux:button>
 
                                     <flux:menu class="w-auto">
-                                        @foreach ($allowed as $opt)
-                                            <flux:menu.item
-                                                wire:click="changeStatus({{ $row->id }}, {{ $opt->id }})"
-                                                class="flex items-center gap-2">
-                                                <span class="inline-flex w-3.5 h-3.5 rounded-full ring-1 ring-black/10"
-                                                    style="background-color: {{ $opt->color }};"></span>
-                                                <span class="flex-1">{{ $opt->name }}</span>
-                                            </flux:menu.item>
-                                        @endforeach
+                                        @forelse ($flowIds as $sid)
+                                            @php $opt = $statusMap->get((int)$sid); @endphp
+                                            @if ($opt)
+                                                <flux:menu.item
+                                                    wire:click="changeStatus({{ $row->id }}, {{ $opt->id }})"
+                                                    class="flex items-center gap-2">
+                                                    <span class="inline-flex w-3.5 h-3.5 rounded-full ring-1 ring-black/10"
+                                                        style="background-color: {{ $opt->color }};"></span>
+                                                    <span class="flex-1">{{ $opt->name }}</span>
+                                                </flux:menu.item>
+                                            @endif
+                                        @empty
+                                            <div class="px-3 py-2 text-xs opacity-70">Sem fluxo definido</div>
+                                        @endforelse
                                     </flux:menu>
                                 </flux:dropdown>
                             @else
@@ -92,7 +100,6 @@
                             @endcan
                         </flux:table.cell>
 
-
                         <flux:table.cell>
                             <flux:badge size="sm" variant="solid" :color="$row->paid ? 'green' : 'amber'">
                                 {{ $row->paid ? 'Sim' : 'Não' }}
@@ -101,20 +108,48 @@
 
                         <flux:table.cell>{{ optional($row->completed_at)->format('d/m/Y') ?? '—' }}</flux:table.cell>
 
+                        <flux:table.cell>
+                            @if ($row->in_progress)
+                                <flux:badge size="sm" variant="solid" color="blue"
+                                    class="flex items-center gap-1">
+                                    <span>Sim</span>
+                                    <svg class="h-3.5 w-3.5 text-white/80 animate-spin"
+                                        xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10"
+                                            stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor"
+                                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                                        </path>
+                                    </svg>
+                                </flux:badge>
+                            @else
+                                <flux:badge size="sm" variant="solid" color="zinc">
+                                    Não
+                                </flux:badge>
+                            @endif
+                        </flux:table.cell>
+
                         <flux:table.cell align="end">
+                            @php
+                                $isRunning = $row->logs
+                                    ->where('status_id', $row->current_status_id)
+                                    ->whereNull('finished_at')
+                                    ->isNotEmpty();
+
+                                $canStart = auth()->user()->can('services.start');
+                                $canFinish = auth()->user()->can('services.finish');
+                                $canToggle = ($isRunning && $canFinish) || (!$isRunning && $canStart);
+                            @endphp
+
                             <div class="flex flex-row gap-2 justify-end">
-                                @can('services.start')
-                                    <flux:tooltip content="Iniciar">
-                                        <flux:button size="sm" icon="play" variant="ghost" class="cursor-pointer"
-                                            wire:click="startService({{ $row->id }})" />
+                                @if ($canToggle)
+                                    <flux:tooltip :content="$isRunning ? 'Finalizar' : 'Iniciar'">
+                                        <flux:button size="sm" :icon="$isRunning ? 'check' : 'play'"
+                                            :color="$isRunning ? 'green' : null" class="cursor-pointer"
+                                            wire:click="openConfirmToggle({{ $row->id }})" />
                                     </flux:tooltip>
-                                @endcan
-                                @can('services.finish')
-                                    <flux:tooltip content="Finalizar">
-                                        <flux:button size="sm" icon="check" color="green" class="cursor-pointer"
-                                            wire:click="finishService({{ $row->id }})" />
-                                    </flux:tooltip>
-                                @endcan
+                                @endif
+
                                 @can('services.manage')
                                     <flux:tooltip content="Editar">
                                         <flux:button size="sm" icon="pencil-square" variant="ghost"
@@ -127,6 +162,7 @@
                                 @endcan
                             </div>
                         </flux:table.cell>
+
                     </flux:table.row>
                 @endforeach
             </flux:table.rows>
@@ -139,32 +175,56 @@
             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <flux:input label="Cliente" wire:model="client" required />
                 <flux:input label="Cabeçote" wire:model="cylinder_head" required />
-                <flux:input label="Ordem (opcional)" wire:model="service_order" type="number" min="1" />
+                <flux:input label="O.S. (opcional)" wire:model="service_order" type="number" min="1" />
 
-                {{-- NOVO: multiselect da trilha (ordem das etapas) --}}
                 <div class="md:col-span-2">
-                    <flux:select variant="listbox" multiple searchable label="Fluxo (ordem das etapas)"
-                        wire:model="flow_status_ids" placeholder="Selecione as etapas na ordem desejada">
+                    <flux:select variant="listbox" multiple searchable label="Fluxo (status incluídos)"
+                        wire:model.live="flow_status_ids" placeholder="Selecione os status">
                         @foreach ($this->statuses as $st)
                             <flux:select.option :value="$st->id">{{ $st->name }}</flux:select.option>
                         @endforeach
                     </flux:select>
                     <p class="text-xs text-zinc-500 mt-1">
-                        Selecione os status na ordem em que o serviço deve avançar. O primeiro será o status inicial.
+                        Selecione os status. A <strong>ordem</strong> é definida abaixo com os botões.
                     </p>
+                </div>
 
-                    {{-- Prévia da ordem escolhida (opcional, ajuda visual) --}}
-                    @if (!empty($flow_status_ids))
-                        <div class="flex flex-wrap gap-2 mt-2">
-                            @foreach ($flow_status_ids as $i => $sid)
-                                @php $s = $statusesById->get((int)$sid); @endphp
-                                <span
-                                    class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded ring-1 ring-black/10"
-                                    style="background-color: {{ $s?->color ?? '#E5E7EB' }}; color: {{ contrast_color($s?->color ?? '#E5E7EB') }};">
-                                    #{{ $i + 1 }} {{ $s?->name ?? '—' }}
-                                </span>
-                            @endforeach
-                        </div>
+                <div class="md:col-span-2">
+                    <label class="block text-sm font-medium mb-1">Ordem de execução</label>
+
+                    @php
+                        $statusesById = $this->statuses->keyBy('id');
+                        $orderedVisible = array_values(
+                            array_filter($flow_order_ids, fn($id) => in_array((int) $id, $flow_status_ids, true)),
+                        );
+                        $lastIndex = count($orderedVisible) - 1;
+                    @endphp
+
+                    <ol class="space-y-2">
+                        @foreach ($orderedVisible as $i => $sid)
+                            @php $s = $statusesById->get((int) $sid); @endphp
+                            <li
+                                class="flex items-center justify-between gap-2 p-2 rounded ring-1 ring-black/10 dark:ring-white/10">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs opacity-70 w-6">#{{ $i + 1 }}</span>
+                                    <span class="px-2 py-0.5 text-xs rounded ring-1 ring-black/10"
+                                        style="background-color: {{ $s?->color ?? '#E5E7EB' }}; color: {{ contrast_color($s?->color ?? '#E5E7EB') }};">
+                                        {{ $s?->name ?? '—' }}
+                                    </span>
+                                </div>
+
+                                <div class="flex items-center gap-1">
+                                    <flux:button size="xs" variant="ghost" icon="chevron-up"
+                                        wire:click="moveUp({{ (int) $sid }})" :disabled="$i === 0" />
+                                    <flux:button size="xs" variant="ghost" icon="chevron-down"
+                                        wire:click="moveDown({{ (int) $sid }})" :disabled="$i === $lastIndex" />
+                                </div>
+                            </li>
+                        @endforeach
+                    </ol>
+
+                    @if ($lastIndex < 0)
+                        <p class="text-xs text-zinc-500 mt-2">Selecione ao menos um status acima.</p>
                     @endif
                 </div>
 
@@ -177,18 +237,6 @@
                 <div class="md:col-span-2">
                     <x-textarea label="Descrição" wire:model="description" rows="3" />
                 </div>
-
-                {{-- Se estiver editando, mostra o status atual apenas como leitura (opcional) --}}
-                @if ($editingId)
-                    <div class="md:col-span-2">
-                        <label class="block text-sm mb-1">Status atual</label>
-                        <div class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ring-1 ring-black/10"
-                            style="background-color: {{ optional($statusesById->get((int) $current_status_id))->color ?? '#E5E7EB' }};
-                           color: {{ contrast_color(optional($statusesById->get((int) $current_status_id))->color ?? '#E5E7EB') }};">
-                            {{ optional($statusesById->get((int) $current_status_id))->name ?? '—' }}
-                        </div>
-                    </div>
-                @endif
             </div>
 
             <div class="flex justify-end items-center mt-2 gap-2">
@@ -201,10 +249,22 @@
         {{-- Modal Delete --}}
         <x-modal wire:model="confirmingDelete" title="Confirmar exclusão" icon="o-exclamation-triangle" separator>
             <p>Tem certeza que deseja excluir este serviço? Esta ação não pode ser desfeita.</p>
-            <x-slot:actions>
+            <div class="flex justify-end items-center mt-2 gap-2">
                 <flux:button class="btn-ghost" wire:click="$set('confirmingDelete', false)">Cancelar</flux:button>
                 <flux:button class="btn-error" wire:click="delete" icon="trash">Excluir</flux:button>
-            </x-slot:actions>
+            </div>
         </x-modal>
+
+        <x-modal wire:model="confirmingToggle" title="Confirmar ação" separator>
+            <p>{{ $confirmMessage }}</p>
+            <div class="flex justify-end items-center mt-2 gap-2">
+                <flux:button class="btn-ghost" wire:click="$set('confirmingToggle', false)">Cancelar</flux:button>
+                <flux:button :color="$confirmAction === 'finish' ? 'green' : null"
+                    :icon="$confirmAction === 'finish' ? 'check' : 'play'" wire:click="performToggle">
+                    Confirmar
+                </flux:button>
+            </div>
+        </x-modal>
+
     </div>
 </section>
