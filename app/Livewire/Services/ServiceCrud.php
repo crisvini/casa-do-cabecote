@@ -25,6 +25,7 @@ class ServiceCrud extends Component
     public ?int $editingId = null;
     public ?int $current_status_id = null;
     public array $flow_status_ids = [];
+    public array $flow_order_ids = [];
     public ?string $client = '';
     public ?string $cylinder_head = '';
     public ?string $description = '';
@@ -72,29 +73,56 @@ class ServiceCrud extends Component
     public function openCreate(): void
     {
         abort_unless(auth()->user()->can('services.manage'), 403);
-
         $this->resetForm();
-        $this->flow_status_ids = Status::query()->orderBy('id')->limit(1)->pluck('id')->all();
+
+        // sugere pelo menos 1 status
+        $first = Status::query()->orderBy('id')->limit(1)->pluck('id')->all();
+        $this->flow_status_ids = $first;
+        $this->flow_order_ids  = $first;
+
         $this->showForm = true;
     }
 
     public function openEdit(int $id): void
     {
         abort_unless(auth()->user()->can('services.manage'), 403);
+        $service = Service::with('flow')->findOrFail($id);
 
-        $service = Service::findOrFail($id);
         $this->fill([
-            'editingId'        => $service->id,
-            'client'           => $service->client,
-            'cylinder_head'    => $service->cylinder_head,
-            'description'      => $service->description,
+            'editingId'         => $service->id,
+            'client'            => $service->client,
+            'cylinder_head'     => $service->cylinder_head,
+            'description'       => $service->description,
             'current_status_id' => $service->current_status_id,
-            'paid'             => (bool) $service->paid,
-            'completed_at'     => optional($service->completed_at)->format('Y-m-d'),
-            'service_order'    => $service->service_order,
+            'paid'              => (bool) $service->paid,
+            'completed_at'      => optional($service->completed_at)->format('Y-m-d'),
+            'service_order'     => $service->service_order,
         ]);
-        $this->flow_status_ids = $service->flow()->pluck('status_id')->all();
+
+        // selecionados = flow; ordem = flow
+        $flow = $service->flow()->pluck('status_id')->all();
+        $this->flow_status_ids = $flow;
+        $this->flow_order_ids  = $flow;
+
         $this->showForm = true;
+    }
+
+    public function updatedFlowStatusIds(): void
+    {
+        // mantém apenas os que ainda estão selecionados, na ordem atual
+        $this->flow_order_ids = array_values(array_intersect($this->flow_order_ids, $this->flow_status_ids));
+        // adiciona novos ao final
+        foreach ($this->flow_status_ids as $id) {
+            if (!in_array($id, $this->flow_order_ids, true)) {
+                $this->flow_order_ids[] = $id;
+            }
+        }
+    }
+
+    public function reorderFlow(array $orderedIds): void
+    {
+        // recebe ['3','7','9', ...] e guarda como int
+        $this->flow_order_ids = array_map('intval', $orderedIds);
     }
 
     public function save(): void
@@ -103,9 +131,11 @@ class ServiceCrud extends Component
         $data = $this->validate();
 
         DB::transaction(function () use ($data) {
-            // o status atual precisa ser o 1º da trilha ao criar
+            // se não arrastou nada, usa a seleção como fallback
+            $order = !empty($this->flow_order_ids) ? $this->flow_order_ids : $this->flow_status_ids;
+
             if (!$this->editingId) {
-                $data['current_status_id'] = (int) $this->flow_status_ids[0];
+                $data['current_status_id'] = (int) $order[0];
             }
 
             /** @var \App\Models\Service $service */
@@ -113,18 +143,19 @@ class ServiceCrud extends Component
                 ? tap(Service::findOrFail($this->editingId))->update($data)
                 : Service::create($data);
 
-            // (re)gravar o flow deste serviço na ordem escolhida
             $service->flow()->delete();
-            foreach (array_values($this->flow_status_ids) as $i => $statusId) {
+            foreach (array_values($order) as $i => $statusId) {
                 $service->flow()->create([
                     'status_id'  => (int) $statusId,
                     'step_order' => $i + 1,
                 ]);
             }
 
-            // se editou e o status atual não está mais no flow, reposiciona no 1º
-            if ($this->editingId && !in_array($service->current_status_id, $this->flow_status_ids, true)) {
-                $service->updateQuietly(['current_status_id' => (int) $this->flow_status_ids[0], 'completed_at' => null]);
+            if ($this->editingId && !in_array($service->current_status_id, $order, true)) {
+                $service->updateQuietly([
+                    'current_status_id' => (int) $order[0],
+                    'completed_at'      => null
+                ]);
             }
         });
 
