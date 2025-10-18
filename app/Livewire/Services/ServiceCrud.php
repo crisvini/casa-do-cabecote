@@ -4,12 +4,12 @@ namespace App\Livewire\Services;
 
 use App\Models\Service;
 use App\Models\Status;
-use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\On;
 use Livewire\Component;
 use Livewire\WithPagination;
+use Illuminate\Support\Facades\DB;
 
 #[Layout('components.layouts.app')]
 class ServiceCrud extends Component
@@ -24,6 +24,7 @@ class ServiceCrud extends Component
     // form (create/edit)
     public ?int $editingId = null;
     public ?int $current_status_id = null;
+    public array $flow_status_ids = [];
     public ?string $client = '';
     public ?string $cylinder_head = '';
     public ?string $description = '';
@@ -41,6 +42,8 @@ class ServiceCrud extends Component
             'cylinder_head'     => ['required', 'string', 'max:255'],
             'description'       => ['nullable', 'string'],
             'current_status_id' => ['required', Rule::exists('statuses', 'id')],
+            'flow_status_ids'   => ['required', 'array', 'min:1'],
+            'flow_status_ids.*' => ['integer', Rule::exists('statuses', 'id')],
             'paid'              => ['boolean'],
             'completed_at'      => ['nullable', 'date'],
             'service_order'     => ['nullable', 'integer', 'min:1', Rule::unique('services', 'service_order')->ignore($this->editingId)],
@@ -71,6 +74,7 @@ class ServiceCrud extends Component
         abort_unless(auth()->user()->can('services.manage'), 403);
 
         $this->resetForm();
+        $this->flow_status_ids = Status::query()->orderBy('id')->limit(1)->pluck('id')->all();
         $this->showForm = true;
     }
 
@@ -89,20 +93,40 @@ class ServiceCrud extends Component
             'completed_at'     => optional($service->completed_at)->format('Y-m-d'),
             'service_order'    => $service->service_order,
         ]);
+        $this->flow_status_ids = $service->flow()->pluck('status_id')->all();
         $this->showForm = true;
     }
 
     public function save(): void
     {
         abort_unless(auth()->user()->can('services.manage'), 403);
-
         $data = $this->validate();
 
-        if ($this->editingId) {
-            Service::whereKey($this->editingId)->update($data);
-        } else {
-            Service::create($data);
-        }
+        DB::transaction(function () use ($data) {
+            // o status atual precisa ser o 1º da trilha ao criar
+            if (!$this->editingId) {
+                $data['current_status_id'] = (int) $this->flow_status_ids[0];
+            }
+
+            /** @var \App\Models\Service $service */
+            $service = $this->editingId
+                ? tap(Service::findOrFail($this->editingId))->update($data)
+                : Service::create($data);
+
+            // (re)gravar o flow deste serviço na ordem escolhida
+            $service->flow()->delete();
+            foreach (array_values($this->flow_status_ids) as $i => $statusId) {
+                $service->flow()->create([
+                    'status_id'  => (int) $statusId,
+                    'step_order' => $i + 1,
+                ]);
+            }
+
+            // se editou e o status atual não está mais no flow, reposiciona no 1º
+            if ($this->editingId && !in_array($service->current_status_id, $this->flow_status_ids, true)) {
+                $service->updateQuietly(['current_status_id' => (int) $this->flow_status_ids[0], 'completed_at' => null]);
+            }
+        });
 
         $this->showForm = false;
         $this->dispatch('notify', body: 'Serviço salvo com sucesso.');
@@ -130,11 +154,7 @@ class ServiceCrud extends Component
         abort_unless(auth()->user()->can('services.start'), 403);
 
         $service = Service::findOrFail($id);
-
-        // regra simples: marcar como não concluído
-        $service->update([
-            'paid' => $service->paid, // sem mudança
-        ]);
+        $service->start(auth()->user()); // cria/garante o log de início do status atual
 
         $this->dispatch('notify', body: 'Serviço iniciado.');
     }
@@ -144,41 +164,36 @@ class ServiceCrud extends Component
         abort_unless(auth()->user()->can('services.finish'), 403);
 
         $service = Service::findOrFail($id);
+        $service->finish(auth()->user()); // finaliza o passo atual e AVANÇA pro PRÓXIMO da trilha
 
-        // avançar para próximo status + setar completed_at se FINALIZADO
-        $nextStatusId = $this->nextStatusId($service->current_status_id);
-        $payload = ['current_status_id' => $nextStatusId];
-
-        $finalSlug = 'finalizado';
-        $isFinal = Status::whereKey($nextStatusId)->where('slug', $finalSlug)->exists();
-        if ($isFinal && !$service->completed_at) {
-            $payload['completed_at'] = now()->toDateString();
-        }
-
-        $service->update($payload);
-
-        $this->dispatch('notify', body: 'Serviço finalizado/avançado para a próxima etapa.');
+        $this->dispatch('notify', body: 'Serviço avançado para a próxima etapa.');
     }
 
     public function changeStatus(int $id, int $statusId): void
     {
         abort_unless(auth()->user()->can('services.change-status'), 403);
 
-        Service::whereKey($id)->update(['current_status_id' => $statusId]);
+        $service = Service::with('flow')->findOrFail($id);
+        $flowIds = $service->flow->pluck('status_id')->all();
+
+        $isAdmin = auth()->user()->hasRole('admin');
+        if (!$isAdmin && !in_array($statusId, $flowIds, true)) {
+            $this->dispatch('notify', body: 'Este serviço não possui essa etapa na trilha.', type: 'warning');
+            return;
+        }
+
+        $service->update(['current_status_id' => $statusId]);
+
+        // se foi para o último passo, marca concluído; senão, desmarca
+        if (!empty($flowIds) && $statusId === end($flowIds)) {
+            $service->updateQuietly(['completed_at' => now()]);
+        } else {
+            $service->updateQuietly(['completed_at' => null]);
+        }
+
         $this->dispatch('notify', body: 'Status alterado.');
     }
 
-    protected function nextStatusId(int $currentId): int
-    {
-        // Estratégia simples: pela ordem do ID (funciona se seed manteve ordem)
-        $ids = Status::orderBy('id')->pluck('id')->values();
-        $pos = $ids->search($currentId);
-        if ($pos === false || $pos === $ids->count() - 1) {
-            // se já é o último, mantém (ou poderia voltar ao primeiro)
-            return $currentId;
-        }
-        return (int) $ids[$pos + 1];
-    }
 
     protected function resetForm(): void
     {

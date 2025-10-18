@@ -104,18 +104,18 @@ class Service extends Model
     |--------------------------------------------------------------------------
     */
 
-    /** Inicia o status atual: cria log de start se não existir. */
     public function start(\App\Models\User $user): void
     {
+        // cria log de início para o status atual, se ainda não existir um aberto
         $this->logs()->firstOrCreate(
             ['status_id' => $this->current_status_id, 'finished_at' => null],
             ['user_id' => $user->id, 'started_at' => now()]
         );
     }
 
-    /** Finaliza o status atual, seta finished_at; se for o último do flow, marca completed_at. */
     public function finish(\App\Models\User $user): void
     {
+        // fecha o log aberto do status atual
         $log = $this->logs()
             ->where('status_id', $this->current_status_id)
             ->whereNull('finished_at')
@@ -126,18 +126,19 @@ class Service extends Model
             $log->update(['finished_at' => now(), 'user_id' => $user->id]);
         }
 
-        // se tiver um próximo status no flow, avance; senão, conclua
-        $next = $this->flow()->where('step_order', '>', function ($q) {
-            $q->from('service_status_flows')
-                ->select('step_order')
-                ->whereColumn('service_status_flows.service_id', 'services.id')
-                ->whereColumn('service_status_flows.status_id', 'services.current_status_id')
-                ->limit(1);
-        })->orderBy('step_order')->first();
+        // acha o passo atual na trilha
+        $currentStep = $this->flow()->where('status_id', $this->current_status_id)->first();
+
+        // próximo passo da trilha
+        $next = $currentStep
+            ? $this->flow()->where('step_order', '>', $currentStep->step_order)->orderBy('step_order')->first()
+            : null;
 
         if ($next) {
+            // avança para o próximo status do flow
             $this->update(['current_status_id' => $next->status_id]);
         } else {
+            // se não tem próximo, conclui o serviço
             $this->update(['completed_at' => now()]);
         }
     }

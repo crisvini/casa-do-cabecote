@@ -1,6 +1,4 @@
-<div class="flex aspect-square size-8 items-center justify-center rounded-md bg-accent-content text-accent-foreground">
-    <x-app-logo-icon class="size-5 fill-current text-white dark:text-black" />
-</div>
-<div class="ms-1 grid flex-1 text-start text-sm">
-    <span class="mb-0.5 truncate leading-tight font-semibold">Casa do Cabeçote</span>
+<div>
+    <img src="{{ Vite::asset('resources/images/black-logo.svg') }}" alt="Logo" class="block dark:hidden">
+    <img src="{{ Vite::asset('resources/images/white-logo.svg') }}" alt="Logo" class="hidden dark:block">
 </div>
