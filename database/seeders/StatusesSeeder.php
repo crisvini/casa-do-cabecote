@@ -29,21 +29,28 @@ class StatusesSeeder extends Seeder
             ['name' => 'FINALIZADO',  'color' => '#1C8A4A'],
         ];
 
+        $nonSelectable = ['FINALIZADO', 'MORTO', 'PARADO'];
+        $terminal      = ['FINALIZADO', 'MORTO'];
+
         foreach ($statuses as $item) {
-            $slug = Str::slug($item['name'], '-');
+            $name = $item['name'];
+            $slug = Str::slug($name, '-');
+
+            $isSelectable = !in_array($name, $nonSelectable, true);
+            $isTerminal   =  in_array($name, $terminal, true);
 
             Status::updateOrCreate(
                 ['slug' => $slug],
                 [
-                    'name'          => $item['name'],
+                    'name'          => $name,
                     'slug'          => $slug,
                     'color'         => $item['color'],
-                    'is_selectable' => $item['name'] === ('FINALIZADO' || 'MORTO' || 'PARADO') ? false : true,
-                    'is_terminal'   => $item['color'] === ('FINALIZADO' || 'MORTO') ? true : false,
+                    'is_selectable' => $isSelectable,
+                    'is_terminal'   => $isTerminal,
                 ]
             );
 
-            // Cria permissão do Spatie para visualizar serviços com este status
+            // Permissão para visualizar serviços com este status
             Permission::firstOrCreate(['name' => "services.view.status.{$slug}"]);
         }
 

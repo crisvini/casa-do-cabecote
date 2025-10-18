@@ -47,17 +47,27 @@ class ServiceCrud extends Component
             'client'            => ['required', 'string', 'max:255'],
             'cylinder_head'     => ['required', 'string', 'max:255'],
             'description'       => ['nullable', 'string'],
-            'current_status_id' => ['required', Rule::exists('statuses', 'id')],
-            // Somente itens que NÃO são terminais e são selecionáveis podem ir ao fluxo
+
+            // ⛔ current_status_id só pode ser status NÃO terminal e selecionável
+            'current_status_id' => [
+                'required',
+                'integer',
+                Rule::exists('statuses', 'id')->where(
+                    fn($q) => $q->where('is_terminal', false)
+                        ->where('is_selectable', true)
+                ),
+            ],
+
+            // ✅ fluxo: só status NÃO terminais e selecionáveis
             'flow_status_ids'   => ['required', 'array', 'min:1'],
             'flow_status_ids.*' => [
                 'integer',
                 Rule::exists('statuses', 'id')->where(
-                    fn($q) => $q
-                        ->where('is_terminal', false)
+                    fn($q) => $q->where('is_terminal', false)
                         ->where('is_selectable', true)
                 ),
             ],
+
             'paid'              => ['boolean'],
             'completed_at'      => ['nullable', 'date'],
             'service_order'     => ['nullable', 'integer', 'min:1', Rule::unique('services', 'service_order')->ignore($this->editingId)],
@@ -66,8 +76,12 @@ class ServiceCrud extends Component
 
     public function mount(): void
     {
-        // default para novo
-        $this->current_status_id = Status::query()->value('id'); // primeiro status
+        $firstAllowed = Status::where('is_terminal', false)
+            ->where('is_selectable', true)
+            ->orderBy('id')
+            ->value('id');
+
+        $this->current_status_id = (int) $firstAllowed;
     }
 
     public function updatingSearch()
@@ -88,11 +102,17 @@ class ServiceCrud extends Component
         abort_unless(auth()->user()->can('services.manage'), 403);
         $this->resetForm();
 
-        $first = Status::query()->orderBy('id')->limit(1)->pluck('id')->all();
+        $first = Status::where('is_terminal', false)
+            ->where('is_selectable', true)
+            ->orderBy('id')
+            ->limit(1)
+            ->pluck('id')
+            ->all();
+
         $this->flow_status_ids = array_map('intval', $first);
         $this->flow_order_ids  = array_map('intval', $first);
-        $this->paid = false;
 
+        $this->paid = false;
         $this->editingLocked = false;
         $this->isViewing = false;
         $this->showForm = true;
@@ -213,7 +233,6 @@ class ServiceCrud extends Component
         abort_unless(auth()->user()->can('services.manage'), 403);
 
         if ($this->isViewing) {
-            // apenas ignora / fecha
             $this->showForm = false;
             $this->isViewing = false;
             return;
@@ -229,37 +248,29 @@ class ServiceCrud extends Component
                 ? Service::findOrFail($this->editingId)
                 : new Service();
 
-            // se estiver travado (finalizado), só permite pago/descrição
+            // travado => só campos liberados
             if ($service->exists && ($service->flow_locked || $service->isTerminal())) {
                 $service->update([
                     'paid'        => (bool) $data['paid'],
                     'description' => $data['description'] ?? null,
                 ]);
-
-                // NÃO mexe em fluxo/ordem/status/etc.
                 return;
             }
 
-            // fluxo normal (não-finalizado)
+            // fluxo normal
             $service->fill($data);
-            if (!$service->exists) {
-                $service->current_status_id = (int) $order[0];
-            }
+
+            // 🔒 força current_status_id = primeiro do fluxo (garantidamente permitido)
+            $service->current_status_id = (int) $order[0];
+            $service->completed_at = null;
             $service->save();
 
-            // pode editar fluxo/ordem
+            // regrava o fluxo
             $service->flow()->delete();
             foreach (array_values($order) as $i => $statusId) {
                 $service->flow()->create([
                     'status_id'  => (int) $statusId,
                     'step_order' => $i + 1,
-                ]);
-            }
-
-            if ($this->editingId && !in_array($service->current_status_id, $order, true)) {
-                $service->updateQuietly([
-                    'current_status_id' => (int) $order[0],
-                    'completed_at'      => null,
                 ]);
             }
         });
@@ -335,17 +346,26 @@ class ServiceCrud extends Component
         abort_unless(auth()->user()->can('services.change-status'), 403);
 
         $service = Service::with('flow')->findOrFail($id);
-        $flowIds = $service->flow->pluck('status_id')->all();
+        $target  = Status::findOrFail($statusId);
 
+        // ⛔ nunca permitir aqui status terminal ou não-selecionável
+        if ($target->is_terminal || !$target->is_selectable) {
+            $this->dispatch('notify', body: 'Status inválido para seleção direta.', type: 'warning');
+            return;
+        }
+
+        $flowIds = $service->flow->pluck('status_id')->all();
         $isAdmin = auth()->user()->hasRole('admin');
-        if (!$isAdmin && !in_array($statusId, $flowIds, true)) {
+
+        // mesmo admin precisa respeitar o fluxo (senão vira “teleporte” de etapa)
+        if (!in_array($statusId, $flowIds, true)) {
             $this->dispatch('notify', body: 'Este serviço não possui essa etapa na trilha.', type: 'warning');
             return;
         }
 
         $service->update(['current_status_id' => $statusId]);
 
-        // se foi para o último passo, marca concluído; senão, desmarca
+        // completude baseada no último do fluxo
         if (!empty($flowIds) && $statusId === end($flowIds)) {
             $service->updateQuietly(['completed_at' => now()]);
         } else {
@@ -354,7 +374,6 @@ class ServiceCrud extends Component
 
         $this->dispatch('notify', body: 'Status alterado.');
     }
-
 
     protected function resetForm(): void
     {
@@ -365,7 +384,10 @@ class ServiceCrud extends Component
         $this->paid = false;
         $this->completed_at = null;
         $this->service_order = null;
-        $this->current_status_id = Status::query()->value('id');
+        $this->current_status_id = (int) Status::where('is_terminal', false)
+            ->where('is_selectable', true)
+            ->orderBy('id')
+            ->value('id');
     }
 
     public function getStatusesProperty()
