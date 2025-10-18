@@ -38,7 +38,7 @@
                 <flux:table.column class="truncate">Cliente</flux:table.column>
                 <flux:table.column class="truncate">Cabeçote</flux:table.column>
                 <flux:table.column class="text-center">Status Atual</flux:table.column>
-                <flux:table.column class="text-center">Encerrar/Parar</flux:table.column>
+                <flux:table.column class="text-center">Encerrar</flux:table.column>
                 <flux:table.column class="text-center">Pago</flux:table.column>
                 <flux:table.column class="text-center">Concluído em</flux:table.column>
                 <flux:table.column class="text-center">Em execução?</flux:table.column>
@@ -191,10 +191,13 @@
                                     </flux:tooltip>
                                 @endif
 
-                                <flux:tooltip content="Ver">
-                                    <flux:button size="sm" icon="eye" variant="primary" class="cursor-pointer"
-                                        wire:click="openView({{ $row->id }})" />
-                                </flux:tooltip>
+                                @can('services.view')
+                                    <flux:tooltip content="Ver">
+                                        <flux:button size="sm" icon="eye" variant="primary" class="cursor-pointer"
+                                            wire:click="openView({{ $row->id }})" />
+                                    </flux:tooltip>
+                                @endcan
+
 
                                 @can('services.manage')
                                     <flux:tooltip content="Editar">

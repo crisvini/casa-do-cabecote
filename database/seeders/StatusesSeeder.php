@@ -48,7 +48,7 @@ class StatusesSeeder extends Seeder
         }
 
         // Permissões gerais (caso ainda não existam)
-        foreach (['services.start', 'services.finish', 'services.change-status', 'services.manage'] as $perm) {
+        foreach (['services.start', 'services.finish', 'services.change-status', 'services.manage', 'services.view'] as $perm) {
             Permission::firstOrCreate(['name' => $perm]);
         }
 

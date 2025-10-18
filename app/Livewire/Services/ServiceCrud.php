@@ -125,6 +125,7 @@ class ServiceCrud extends Component
 
     public function openView(int $id): void
     {
+        abort_unless(auth()->user()->can('services.view'), 403);
         $service = Service::with('flow', 'currentStatus')->findOrFail($id);
 
         $this->fill([
